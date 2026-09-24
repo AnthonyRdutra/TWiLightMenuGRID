@@ -376,3 +376,80 @@ DS Menu V2, etc.), porque é o FolderSync do DLDI (`preview.sh`) sincronizando a
 pro disco virtual do lado do host, não uma chamada `fopen()` do nosso código guest. Só dá pra
 confirmar de verdade lendo o código (feito) ou comparando o número de heap do debug menu antes/depois
 no hardware real.
+
+## 18. Scroll horizontal do grid por touch-and-hold
+
+Antes desta mudança, `§13` documentava um fato incômodo: o gesto de "segurar e arrastar" do
+carrossel (`fileBrowse.cpp`, bloco "Dragging icons") nunca era alcançável no tema DSi porque o
+bloco "Grid tap", checado antes no mesmo `if/else if`, tem uma condição (`touch.py < 164`) que é
+superconjunto da dele e sempre intercepta primeiro -- todo toque no grid resolvia
+instantaneamente como tap (`pressed & KEY_TOUCH`, um único frame), sem nenhuma forma de "segurar"
+existir.
+
+O bloco "Grid tap" virou "Grid touch": ao receber o toque, entra num loop curto que só decide tap
+vs. arrasto (mesmo limiar de 2px que o "Dragging icons" do carrossel já usava): solta sem passar do
+limiar → tap (comportamento antigo, inalterado -- hit-test contra a geometria do `GridView`,
+seleciona ou lança). Passa do limiar horizontal antes de soltar → arrasto: o grid passa a seguir o
+dedo 1:1 até soltar, e então faz snap pra coluna mais próxima.
+
+- **`GridView::dragScrollBy(dxPx, screen)`** -- nova API pública: escreve `_scrollPos` e
+  `_scrollDest` juntos (ao contrário de `scrollToColumn`, que só define um destino pra perseguir),
+  então o *chase* proporcional de `update()` não briga com o toque -- não há gap entre os dois pra
+  ele agir enquanto o dedo está na tela. Clampado a `[0, last_used_box/rows * colSpacing]` pra um
+  swipe rápido não rodar a câmera pra fora da lista.
+- **`GridView::nearestColumn(screen)`** -- coluna mais próxima da posição de scroll atual; usada
+  tanto continuamente durante o arrasto (pra saber quando `CURPOS` cruzou pra uma nova coluna, e
+  então carregar os ícones/atualizar o título -- mesmo padrão de "só mexe em título/ícones quando o
+  item central muda" que o `moveCursorGrid()` e o arrasto do carrossel já seguiam) quanto no
+  release, como alvo do snap final.
+- **`draggingGrid`** (novo bool em `fileBrowse.cpp`, extern em `GridView.cpp`) -- true só durante o
+  arrasto; guarda tanto o *chase* de `GridView::update()` (mesma convenção de `draggingIcons`/
+  `scrollWindowTouched`, ver §13) quanto a re-centralização por-frame que o loop principal fazia
+  incondicionalmente (`gridView().scrollToColumn(CURPOS/rows, ...)`, uma vez por frame enquanto
+  espera input) -- sem o guard, ela sobrescreveria o destino do scroll a cada frame assim que o
+  arrasto terminasse e a próxima passada do loop externo rodasse.
+- A linha (row) selecionada fica fixa durante todo o arrasto -- é um gesto puramente horizontal;
+  só a coluna muda. Se a coluna final for mais curta que `rows()` (última coluna parcial), o
+  `clamp` final em `last_used_box` cai no último item válido dela em vez de estourar o array.
+- Sem inércia/momentum: ao soltar o dedo, o grid simplesmente faz snap pra `nearestColumn()`. O
+  arrasto do carrossel (que este substitui como comportamento de fato) tinha lógica de fling
+  (`dx` calculado a partir de `prevTouch1`/`prevTouch2`) -- não portada, pois não fazia parte do
+  gesto pedido (arrasto 1:1 disparado por movimento, sem lançamento por velocidade).
+
+**Pegadinha real encontrada na primeira versão**: o loop de arrasto checava `while (keysHeld() &
+KEY_TOUCH) { scanKeys(); touchRead(&touch); ...; dragScrollBy(touch.px - prevTouch.px, sd); ... }`
+-- a condição do `while` usa o estado do `scanKeys()` da iteração ANTERIOR, então na iteração em
+que o dedo solta o loop ainda roda mais uma vez com um `touchRead()` cuja leitura não é confiável
+(a caneta já não está mais na tela). Esse valor espúrio virava um delta gigante contra `prevTouch`
+(a última posição *real* do dedo), estourando o clamp de `dragScrollBy` pro extremo oposto --
+na prática, qualquer arrasto que terminasse com o dedo numa posição de tela "alta" (típico de um
+arrasto da esquerda pra direita) tinha uma chance real de, ao soltar, saltar pra última coluna,
+mesmo com o arrasto em si tendo se comportado corretamente até ali. O arrasto do carrossel (que
+serviu de referência pro resto desta feature) já evita exatamente isso: checa `!(keysHeld() &
+KEY_TOUCH)` logo após `scanKeys()`/`touchRead()`, **antes** de usar `touch.px` pra qualquer coisa,
+e só então decide soltar/fizer fling com as posições anteriores válidas. Corrigido pra seguir o
+mesmo padrão: `while (1) { scanKeys(); touchRead(&touch); ...; if (!(keysHeld() & KEY_TOUCH))
+break; dragScrollBy(...); ... }` -- a leitura pós-solta nunca chega a ser usada.
+
+**Segunda pegadinha: travamento durante o arrasto**. A primeira versão, a cada troca de coluna
+durante o arrasto, chamava `loadGridWindowIcons()` -- que recarrega a janela **inteira**
+(`colsLeft()+1+colsRight()` colunas, ex.: 4+1+3=8 colunas × `rows()` ícones, cada um um decode de
+banner + upload de textura). Isso é o que a seleção por toque (`Grid tap`, um evento único) e o
+snap final do arrasto (um evento único, ao soltar) já faziam -- correto ali, mas caro demais pra
+rodar em **todo** cruzamento de coluna enquanto o dedo desliza, que é exatamente onde
+`moveCursorGrid()` (navegação por D-pad) tem o cuidado de carregar só a coluna nova que entra na
+janela (`loadGridColumn(dc, newCol + colsRight())`/`- colsLeft()`, uma chamada barata). Trocado
+pro mesmo padrão incremental, com um laço (em vez de uma chamada só) pra cobrir um flick rápido
+que cruza mais de uma coluna num único frame -- cada coluna cruzada carrega só a que entra na
+borda correspondente, nunca a janela inteira de novo.
+
+**Flick pro início/fim**: antes, soltar o dedo sempre fazia snap pra `nearestColumn()` --
+independente da velocidade, um arrasto rápido só chegava até onde o dedo fisicamente alcançou na
+tela. Agora o loop de arrasto também guarda `prevPrevTouch` (posição um frame antes de
+`prevTouch`, mesma ideia de janela de 1 frame que `prevTouch1`/`prevTouch2` do fling do carrossel).
+No release, `flickPx = prevTouch.px - prevPrevTouch.px` (deslocamento do último frame antes de
+soltar) é comparado contra um limiar fixo (`FLING_PX_PER_FRAME = 10`, ajustável ali mesmo): acima
+dele, o release pula direto pra coluna 0 ou pra última coluna (`last_used_box / rows`) em vez de
+`nearestColumn()` -- mesma convenção de sinal do `dragScrollBy` (swipe rápido pra direita = conteúdo
+segue o dedo = pousa na coluna 0; pra esquerda = última coluna). Sem essa checagem um "puxão" forte
+não tinha como alcançar as pontas do grid num gesto só.

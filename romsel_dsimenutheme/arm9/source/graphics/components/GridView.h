@@ -43,6 +43,17 @@ public:
 	// position restored at startup.
 	void jumpToItem(int item, int screen);
 
+	// ---- Touch-drag scrolling (hold + move horizontally on the grid). ----
+	// Nudges the scroll position by `dxPx` screen pixels of finger movement this frame (positive
+	// = finger moved right, content follows the finger like any touchscreen scroll surface).
+	// Writes _scrollPos and _scrollDest together so update()'s destination-chase never fights the
+	// touch -- callers still don't touch _scrollPos/_scrollDest directly. Clamped to the valid
+	// column range, so a fast/long swipe can't run the camera off the end of the list.
+	void dragScrollBy(int dxPx, int screen);
+	// Column nearest the current scroll position -- the snap target once a touch-drag ends
+	// (fileBrowse.cpp resolves CURPOS from this plus whichever row was selected at drag start).
+	int nearestColumn(int screen) const;
+
 private:
 	// The animation's own 12-bit fixed-point progress unit (4096 = "whole") -- not a
 	// theme-tunable quantity, so it stays a literal rather than a ThemeLayout getter.
@@ -50,6 +61,9 @@ private:
 
 	int _scrollPos[2];
 	int _scrollDest[2];
+	// _scrollPos as of the last update() call -- lets update() notice a change made directly by
+	// dragScrollBy() (bypasses the chase below) so it can still mark the frame dirty every vblank.
+	int _lastScrollPos[2];
 	int _selCur;
 	int _selPrev;
 	int _zoomFP;

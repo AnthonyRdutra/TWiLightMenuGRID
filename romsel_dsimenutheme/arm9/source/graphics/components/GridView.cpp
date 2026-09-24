@@ -18,11 +18,21 @@
 extern bool draggingIcons;
 extern bool scrollWindowTouched;
 
+// Defined in fileBrowse.cpp; true only while a *grid* touch-drag (hold + move horizontally) is in
+// progress. dragScrollBy() already keeps _scrollPos/_scrollDest in lockstep so there's no gap for
+// the chase below to act on mid-drag, but the guard is kept anyway to match the convention above.
+extern bool draggingGrid;
+
 // Defined elsewhere (fileBrowse.cpp/main.cpp); count of items currently spawned in the list.
 extern int spawnedtitleboxes;
 
+// Defined in fileBrowse.cpp; last valid flat item index on the current page -- needed here to
+// clamp the drag's scroll range to the actual last column instead of running off the list.
+extern int last_used_box;
+
 GridView::GridView()
-	: _scrollPos{0, 0}, _scrollDest{0, 0}, _selCur(CURPOS), _selPrev(-1), _zoomFP(PROGRESS_FULL) {
+	: _scrollPos{0, 0}, _scrollDest{0, 0}, _lastScrollPos{0, 0}, _selCur(CURPOS), _selPrev(-1),
+	  _zoomFP(PROGRESS_FULL) {
 	// _selCur starts at the already-persisted cursor position, at full scale, so the item that's
 	// already selected when the grid first appears doesn't play a phantom zoom-in animation (a
 	// carryover from the old carousel's selection-change bookkeeping, which used a -1 sentinel
@@ -51,6 +61,23 @@ void GridView::jumpToColumn(int col, int screen) {
 
 void GridView::jumpToItem(int item, int screen) {
 	jumpToColumn(item / rows(), screen);
+}
+
+void GridView::dragScrollBy(int dxPx, int screen) {
+	int maxCol = last_used_box / rows();
+	int maxScroll = maxCol * tl().gridColSpacing();
+	// Content follows the finger: dragging right (dxPx > 0) reveals earlier columns, i.e. scroll
+	// position decreases -- same sign convention the single-row carousel's own live-drag uses
+	// (titleboxXdest -= touch.px delta in fileBrowse.cpp).
+	_scrollPos[screen] = std::clamp(_scrollPos[screen] - dxPx, 0, maxScroll);
+	_scrollDest[screen] = _scrollPos[screen];
+}
+
+int GridView::nearestColumn(int screen) const {
+	int maxCol = last_used_box / rows();
+	int spacing = tl().gridColSpacing();
+	int col = (_scrollPos[screen] + spacing / 2) / spacing;
+	return std::clamp(col, 0, maxCol);
 }
 
 bool GridView::update() {
@@ -84,7 +111,7 @@ bool GridView::update() {
 	// items appear to vanish until the camera eventually crawls back into sync. A proportional
 	// step (same pattern the single-row carousel already uses for this exact problem, see
 	// graphics.cpp's non-DSi scroll-chase) closes a big gap fast and a small one precisely.
-	if (!draggingIcons && !scrollWindowTouched) {
+	if (!draggingIcons && !scrollWindowTouched && !draggingGrid) {
 		int sd = ms().secondaryDevice;
 		if (_scrollPos[sd] != _scrollDest[sd]) {
 			int diff = _scrollDest[sd] - _scrollPos[sd];
@@ -94,6 +121,19 @@ bool GridView::update() {
 			} else {
 				_scrollPos[sd] = std::min(_scrollPos[sd] + step, _scrollDest[sd]);
 			}
+			dirty = true;
+		}
+	}
+
+	// Detect any change to _scrollPos since the last update() call -- covers both the chase above
+	// and direct writes from dragScrollBy() (fileBrowse.cpp), which bypasses the chase (guarded
+	// off via draggingGrid) and writes _scrollPos straight from touch input, once per vblank while
+	// a finger is dragging the grid. Without this, CURPOS crossing into a new column was the only
+	// thing that marked a frame dirty (see vBlankHandler's curposPrev check in graphics.cpp), so
+	// the grid only appeared to move in per-column jumps instead of tracking the finger smoothly.
+	for (int s = 0; s < 2; s++) {
+		if (_scrollPos[s] != _lastScrollPos[s]) {
+			_lastScrollPos[s] = _scrollPos[s];
 			dirty = true;
 		}
 	}

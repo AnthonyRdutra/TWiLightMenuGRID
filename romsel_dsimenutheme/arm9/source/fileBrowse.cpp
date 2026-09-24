@@ -108,6 +108,7 @@ int movingApp = -1;
 int movingAppYpos = 0;
 bool movingAppIsDir = false;
 bool draggingIcons = false;
+bool draggingGrid = false; // true only while a grid touch-drag (hold + move horizontally) is live
 extern bool showMovingArrow;
 extern double movingArrowYpos;
 extern bool displayGameIcons;
@@ -3445,7 +3446,8 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 
 				// Grid: keep the selected column centred (also fixes startup positioning).
 				if (ms().theme == TWLSettings::EThemeDSi) {
-					gridView().scrollToColumn(CURPOS / gridView().rows(), ms().secondaryDevice);
+					if (!draggingGrid)
+						gridView().scrollToColumn(CURPOS / gridView().rows(), ms().secondaryDevice);
 					tex().tickLogoLoad(); // decode deferido do logo no ocioso (não trava a navegação)
 					if (ms().dsiDebugMenu) {
 						tex().drawTopDebug(); // overlay de debug por cima do topo (após tickLogoLoad)
@@ -3754,49 +3756,173 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 				movingApp = -1;
 				titleboxXspacing = 58;
 				titleboxXdest[ms().secondaryDevice] = titleboxXpos[ms().secondaryDevice] = CURPOS * titleboxXspacing;
-			} else if (ms().theme == TWLSettings::EThemeDSi && (pressed & KEY_TOUCH) && touch.py < 164) { // Grid tap (DSi theme)
-				// Map the touch to a grid cell using the exact same layout the renderer uses
-				// (GridView), so hit-testing can never drift from what's drawn.
-				const int hitR = 28; // half hit-box (px) around each icon centre
+			} else if (ms().theme == TWLSettings::EThemeDSi && (pressed & KEY_TOUCH) && touch.py < 164) { // Grid touch: tap to select/launch, hold+move to scroll (DSi theme)
 				const int sd = ms().secondaryDevice;
 				const int rows = gridView().rows();
-				const int selCol = CURPOS / rows;
-				int hitItem = -1;
-				for (int c = std::max(selCol - gridView().colsLeft(), 0); c <= selCol + gridView().colsRight() && hitItem < 0; c++) {
-					int cx = gridView().columnCenterX(c, sd); // column centre x
-					if (touch.px < cx - hitR || touch.px > cx + hitR)
-						continue;
-					for (int r = 0; r < rows; r++) {
-						int i = c * rows + r;
-						if (i > last_used_box)
-							break;
-						int cy = gridView().rowCenterY(r);
-						if (touch.py >= cy - hitR && touch.py <= cy + hitR) {
-							hitItem = i;
-							break;
-						}
+				touchPosition startTouch = touch;
+
+				// Disambiguate tap vs. hold-drag by movement, same threshold the carousel's own
+				// tap/drag split below uses. A plain hold with no movement still resolves as a tap
+				// on release (matches "touch and move" being the documented trigger for scrolling,
+				// not "touch and wait").
+				bool tapped = false;
+				while (1) {
+					scanKeys();
+					touchRead(&touch);
+					bgOperations(true);
+
+					if (!(keysHeld() & KEY_TOUCH)) {
+						tapped = true;
+						break;
+					} else if (touch.px < startTouch.px - 2 || touch.px > startTouch.px + 2) {
+						break;
 					}
 				}
-				if (hitItem >= 0) {
-					if (hitItem == CURPOS) {
-						// Tapping the already-selected item launches it
-						gameTapped = true;
-					} else {
-						// Select the tapped item
-						CURPOS = hitItem;
-						settingsChanged = true;
-						bannerTextShown = false;
-						boxArtLoaded = false;
-						waitForNeedToPlayStopSound = 1;
-						gridView().scrollToColumn(CURPOS / rows, sd);
-						loadGridWindowIcons(dirContents[scrn]);
-						snd().playSelect();
-						dsiBinariesChecked = false;
-						apChecked = false;
-						checkedDSiWareCompatibleB4DS = false;
-						dsiWareRAMLimitMsgPrepped = false;
-						infoCheckTimer = 0;
+
+				if (tapped) {
+					// Map the touch to a grid cell using the exact same layout the renderer uses
+					// (GridView), so hit-testing can never drift from what's drawn.
+					const int hitR = 28; // half hit-box (px) around each icon centre
+					const int selCol = CURPOS / rows;
+					int hitItem = -1;
+					for (int c = std::max(selCol - gridView().colsLeft(), 0); c <= selCol + gridView().colsRight() && hitItem < 0; c++) {
+						int cx = gridView().columnCenterX(c, sd); // column centre x
+						if (startTouch.px < cx - hitR || startTouch.px > cx + hitR)
+							continue;
+						for (int r = 0; r < rows; r++) {
+							int i = c * rows + r;
+							if (i > last_used_box)
+								break;
+							int cy = gridView().rowCenterY(r);
+							if (startTouch.py >= cy - hitR && startTouch.py <= cy + hitR) {
+								hitItem = i;
+								break;
+							}
+						}
 					}
+					if (hitItem >= 0) {
+						if (hitItem == CURPOS) {
+							// Tapping the already-selected item launches it
+							gameTapped = true;
+						} else {
+							// Select the tapped item
+							CURPOS = hitItem;
+							settingsChanged = true;
+							bannerTextShown = false;
+							boxArtLoaded = false;
+							waitForNeedToPlayStopSound = 1;
+							gridView().scrollToColumn(CURPOS / rows, sd);
+							loadGridWindowIcons(dirContents[scrn]);
+							snd().playSelect();
+							dsiBinariesChecked = false;
+							apChecked = false;
+							checkedDSiWareCompatibleB4DS = false;
+							dsiWareRAMLimitMsgPrepped = false;
+							infoCheckTimer = 0;
+						}
+					}
+				} else {
+					// Hold + move: scroll the grid horizontally, 1:1 with the finger. The row stays
+					// whatever it was when the drag started -- this gesture only spins columns.
+					draggingGrid = true;
+					showSTARTborder = false;
+					const int selRow = CURPOS % rows;
+					touchPosition prevTouch = touch; // already past the tap/drag threshold
+					touchPosition prevPrevTouch = touch; // one frame further back, for a release-time flick check
+
+					while (1) {
+						scanKeys();
+						touchRead(&touch);
+						bgOperations(true);
+
+						// Stop as soon as the pen lifts, *before* touching dragScrollBy() with
+						// this frame's reading -- touchRead() isn't guaranteed valid once
+						// KEY_TOUCH drops (same reason the carousel's own live-drag loop below
+						// checks this immediately after scanKeys(), before ever using touch.px).
+						// Using a post-release reading here produced a huge spurious delta
+						// against prevTouch (whatever position the finger was last actually at)
+						// that slammed the scroll to whichever end it overshot past on release.
+						if (!(keysHeld() & KEY_TOUCH))
+							break;
+
+						gridView().dragScrollBy(touch.px - prevTouch.px, sd);
+						prevPrevTouch = prevTouch;
+						prevTouch = touch;
+
+						int col = gridView().nearestColumn(sd);
+						int newCURPOS = std::clamp(col * rows + selRow, 0, last_used_box);
+						if (newCURPOS != CURPOS) {
+							int oldCol = CURPOS / rows;
+							CURPOS = newCURPOS;
+							int newCol = CURPOS / rows;
+
+							// Load only the column(s) newly entering the window, same incremental
+							// approach moveCursorGrid() uses -- reloading the *whole* window
+							// (colsLeft+1+colsRight columns) on every single column crossing here
+							// was decoding/uploading far more icons than necessary every step of
+							// the drag, stalling the frame rate while scrolling. A loop (rather
+							// than a single loadGridColumn() call) covers a fast flick that
+							// crosses more than one column in a single frame.
+							if (newCol > oldCol) {
+								for (int c = oldCol + 1; c <= newCol; c++)
+									loadGridColumn(dirContents[scrn], c + gridView().colsRight());
+							} else {
+								for (int c = oldCol - 1; c >= newCol; c--)
+									loadGridColumn(dirContents[scrn], c - gridView().colsLeft());
+							}
+
+							dsiBinariesChecked = false;
+							apChecked = false;
+							checkedDSiWareCompatibleB4DS = false;
+							dsiWareRAMLimitMsgPrepped = false;
+							infoCheckTimer = 0;
+
+							clearText();
+							if (CURPOS + PAGENUM * 40 < (int)dirContents[scrn].size()) {
+								currentBg = 1;
+								titleUpdate(dirContents[scrn][CURPOS + PAGENUM * 40].isDirectory,
+											dirContents[scrn][CURPOS + PAGENUM * 40].name, CURPOS);
+								bannerTextShown = true;
+							} else {
+								currentBg = 0;
+								bannerTextShown = false;
+							}
+							updateText(false);
+							boxArtLoaded = false;
+							settingsChanged = true;
+						}
+					}
+					draggingGrid = false;
+
+					// Fast flick: a big enough last-frame swipe right before release jumps straight
+					// to the first/last column instead of just the nearest one, so a hard swipe
+					// reliably reaches either end in one gesture instead of several. Same sign
+					// convention as dragScrollBy() -- a fast rightward swipe (content follows the
+					// finger) lands on column 0, a fast leftward one on the last column.
+					const int FLING_PX_PER_FRAME = 10; // tune here if it fires too eagerly/rarely
+					int flickPx = prevTouch.px - prevPrevTouch.px;
+					int maxCol = last_used_box / rows;
+					int finalCol;
+					if (flickPx > FLING_PX_PER_FRAME) {
+						finalCol = 0;
+					} else if (flickPx < -FLING_PX_PER_FRAME) {
+						finalCol = maxCol;
+					} else {
+						finalCol = gridView().nearestColumn(sd);
+					}
+					CURPOS = std::clamp(finalCol * rows + selRow, 0, last_used_box);
+					gridView().scrollToColumn(finalCol, sd);
+					loadGridWindowIcons(dirContents[scrn]);
+					bannerTextShown = false;
+					boxArtLoaded = false;
+					settingsChanged = true;
+					waitForNeedToPlayStopSound = 1;
+					dsiBinariesChecked = false;
+					apChecked = false;
+					checkedDSiWareCompatibleB4DS = false;
+					dsiWareRAMLimitMsgPrepped = false;
+					infoCheckTimer = 0;
+					snd().playSelect();
 				}
 			} else if (false && (pressed & KEY_TOUCH) && touch.py > 171 && touch.px >= 19 && touch.px <= 236) { // Scroll bar (disabled — was DSi carousel only)
 				touchPosition startTouch = touch;
