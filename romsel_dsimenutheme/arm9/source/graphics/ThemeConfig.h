@@ -47,6 +47,19 @@ private:
 	int _batteryRenderY;
 	int _batteryRenderX;
 
+	// Ajuste fino (px) da posição da bateria+hora dentro do status_bar.bmp da tela superior do
+	// grid DSi (StatusBarComponent) -- desloca as duas juntas, preservando o layout entre elas
+	// (bateria ancorada à direita, hora à esquerda dela). Ver graphics/components/StatusBarComponent.
+	int _statusBarContentOffsetX;
+	int _statusBarContentOffsetY;
+
+	// Zoom (%, 100 = tamanho normal) e deslocamento (px, a partir do centro da tela superior) do
+	// logo do jogo (GameLogoComponent). Aplicados por cima da animação de zoom-in/out da seleção
+	// (que continua indo de 0 a este tamanho-alvo, não de 0 a 100%).
+	int _logoZoomPercent;
+	int _logoOffsetX;
+	int _logoOffsetY;
+
 	int _usernameRenderY;
 	int _usernameRenderX;
 	int _usernameRenderXDS;
@@ -187,6 +200,13 @@ public:
 	
 	int batteryRenderY() const { return _batteryRenderY; }
 	int batteryRenderX() const { return _batteryRenderX; }
+
+	int statusBarContentOffsetX() const { return _statusBarContentOffsetX; }
+	int statusBarContentOffsetY() const { return _statusBarContentOffsetY; }
+
+	int logoZoomPercent() const { return _logoZoomPercent; }
+	int logoOffsetX() const { return _logoOffsetX; }
+	int logoOffsetY() const { return _logoOffsetY; }
 
 	int usernameRenderY() const { return _usernameRenderY; }
 	int usernameRenderX() const { return _usernameRenderX; }

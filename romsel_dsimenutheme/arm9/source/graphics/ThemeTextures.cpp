@@ -4,12 +4,15 @@
 
 #include <nds.h>
 #include <nds/arm9/dldi.h>
+#include <malloc.h>
+#include <new>
 #include <stdio.h>
 #include <time.h>
 #include "common/twlmenusettings.h"
 #include "common/systemdetails.h"
 #include "common/logging.h"
 #include "myDSiMode.h"
+#include "graphics/graphics.h" // vblankWorkPercent()
 
 #include "paletteEffects.h"
 #include "themefilenames.h"
@@ -30,6 +33,12 @@
 #include "date.h"
 #include "ndsheaderbanner.h"
 #include "ndma.h"
+
+#include "graphics/components/BatteryComponent.h"
+#include "graphics/components/ClockComponent.h"
+#include "graphics/components/GameLogoComponent.h"
+#include "graphics/components/GameTitleComponent.h"
+#include "graphics/components/StatusBarComponent.h"
 
 
 extern bool useTwlCfg;
@@ -87,6 +96,7 @@ static void loadMenuBg() {
 // opacos do brick mantêm a cor (BIT15 setado); os pixels "buraco" (transparentes no PNG) viram 0
 // para o vídeo aparecer por trás. Usado como overlay barato sobre o vídeo (sem alpha blend por
 // pixel). _menuBgDitherHas = false quando o tema não tem o asset (aí cai no blend por software).
+// Estático de propósito (não heap) -- ver TopScreenBoxBmp.h para o porquê.
 static u16 _menuBgDither[256 * 192];
 static bool _menuBgDitherLoaded = false;
 static bool _menuBgDitherHas = false;
@@ -106,87 +116,16 @@ static void loadMenuBgDither() {
 	}
 }
 
-// Top-screen title box (grf/topscreen_titlebox.bmp): the game title/developer text is drawn
-// inside it. Loaded from the active theme; pixels are BG-format, 0 = transparent (magenta key).
-#define TITLEBOX_MAXW 256
-#define TITLEBOX_MAXH 192
-static u16 _titleboxPix[TITLEBOX_MAXW * TITLEBOX_MAXH];
-static int _titleboxW = 0, _titleboxH = 0;
-// Opaque box bounding box within the (possibly full-screen) asset; used to place the box.
-static int _tbBoxX = 0, _tbBoxY = 0, _tbBoxW = 0, _tbBoxH = 0;
-static bool _titleboxLoaded = false;
-
-// Start box (grf/topscreen_startbox.bmp): substitui a titlebox+texto enquanto o vídeo toca.
-static u16 _startboxPix[TITLEBOX_MAXW * TITLEBOX_MAXH];
-static int _startboxW = 0, _startboxH = 0;
-static int _sbBoxX = 0, _sbBoxY = 0, _sbBoxW = 0, _sbBoxH = 0;
-static bool _startboxLoaded = false, _startboxHas = false;
-
-// Status bar (grf/status_bar.bmp): caixa no canto superior direito da tela superior, com a hora
-// e o ícone de bateria por cima. Magenta (#FF00FF) = transparente (0). Desenhada por frame no topo.
-#define STATUSBAR_MAXW 256
-#define STATUSBAR_MAXH 64
-// Escala da fonte da hora na barra (nearest-neighbor). NUM/DEN < 1 reduz. Ex.: 3/4 = 75%.
-#define SB_TIME_NUM 3
-#define SB_TIME_DEN 4
-// Espaço extra (px na escala nativa) entre os caracteres da hora (tracking).
-#define SB_TIME_TRACKING 3
-// Recuo (px) da bateria até a borda direita da barra. Posição da bateria é FIXA (não depende da hora).
-#define SB_BATT_RIGHT_INSET 10
-static u16 _statusBarPix[STATUSBAR_MAXW * STATUSBAR_MAXH];
-static int _sbarW = 0, _sbarH = 0;
-static int _sbarBX = 0, _sbarBY = 0, _sbarBW = 0, _sbarBH = 0; // bounding box (não usado no blit)
-static bool _statusBarLoaded = false, _statusBarHas = false;
-
-// Ícones de bateria (PNG RGBA em <tema>/battery/). Indexados por estado 0..5.
-#define BATT_MAXW 32
-#define BATT_MAXH 24
-#define BATT_STATES 6
-static u16 _battPix[BATT_STATES][BATT_MAXW * BATT_MAXH];
-static int _battW[BATT_STATES] = {0}, _battH[BATT_STATES] = {0};
-static bool _battLoaded = false;
-
-// Último conteúdo desenhado na barra (para só recompor o topo quando muda -> sem flicker por frame).
-static std::string _lastStatusTime;
-static int _lastStatusBatt = -999;
-
-// Slide vertical da caixa inferior (titlebox/startbox): a que sai "cai" (desce e some), a que
-// entra "sobe" (vem de baixo até o lugar). A troca é disparada pelo início/fim do vídeo.
-#define TOPBOX_MARGIN  2       // folga do rodapé
-#define BOX_SLIDE_STEP 8       // px por frame do slide
-#define BOX_SWAP_DELAY 90      // frames após selecionar o item até trocar titlebox->startbox (~1.5s)
-static int _boxKind = 0;       // caixa exibida agora: 0 = titlebox(+texto), 1 = startbox
-static int _boxSlide = 0;      // deslocamento vertical (0 = no lugar; >0 = descida/escondida)
-static int _boxSwapTimer = 0;  // frames desde que o item foi selecionado (conta até BOX_SWAP_DELAY)
-
-// Per-game logo (top screen, drawn above/behind the titlebox). Mapped via logos.yml.
-static u16 _logoPix[256 * 128];
-static int _logoW = 0, _logoH = 0;
-static bool _logoPresent = false;
-static std::string _logoKey; // rom base name já resolvido (cache p/ não recarregar toda seleção)
-static std::string _gameId;  // game_id (sha1) do jogo em foco, resolvido pelo índice do host
-
-// Carregamento assíncrono/deferido do logo: a troca de item só AGENDA o decode (barato);
-// o decode (lodepng, custoso) roda no loop ocioso após o item estabilizar por alguns frames.
-// Trocar de item substitui o pendente = cancelamento do anterior. Assim, rolar não trava a UI.
-#define LOGO_LOAD_DELAY 8              // frames de estabilidade antes de decodar (debounce)
-static std::string _pendingLogoPath;  // caminho do logo a decodar ("" = nada pendente)
-static int _pendingLogoDelay = 0;     // frames restantes até decodar
-static std::u16string _topTitleText;  // título atual (para redesenhar o topo após o decode)
-
-// Animação de zoom do logo (blit manual no BG da tela superior, sem hardware scaling):
-// escala atual anima até o alvo. Ao aparecer (decode pronto) -> zoom-in (0 -> 1).
-// Ao trocar de item -> zoom-out do logo anterior (1 -> 0). Zoom-out é mais rápido que
-// o debounce do decode, evitando o logo antigo virar o novo no meio da animação.
-#define LOGO_ZOOM_IN_STEP  0.14f      // velocidade do zoom-in (aparecer)
-#define LOGO_ZOOM_OUT_STEP 0.22f      // velocidade do zoom-out (sair na troca de item)
-// Drop shadow do logo (software, na composição): silhueta preta deslocada e alpha-blendada,
-// desenhada ANTES do logo. Dá profundidade sobre o brick/vídeo. (O DS não tem shaders.)
-#define LOGO_SHADOW_DX    2           // deslocamento horizontal da sombra (px)
-#define LOGO_SHADOW_DY    2           // deslocamento vertical da sombra (px)
-#define LOGO_SHADOW_ALPHA 128         // opacidade da sombra (0..255; 128 = ~50% preto)
-static float _logoScale = 0.0f;       // escala renderizada agora (0..1)
-static float _logoScaleDest = 0.0f;   // alvo da animação (0 = escondido, 1 = tamanho cheio)
+// The title box, start-prompt box, status bar (battery+clock), and game logo that used to live
+// here (as static globals + loadTitlebox/loadStartbox/loadStatusBar/loadBattery/decodeLogoFile)
+// are now graphics/components/{GameTitleComponent,StatusBarComponent,BatteryComponent,
+// ClockComponent,GameLogoComponent}. loadBoxBmp() (the shared BMP loader they all used) moved to
+// graphics/components/TopScreenBoxBmp. This file keeps only what's still genuinely shared with
+// the per-game video background below: _gameId (resolved by the same asset-index lookup the video
+// path uses) and _topTitleText (the current title text, needed to re-invoke drawTopTitle() from
+// tickLogoLoad()/redrawTop() without those callers needing to know it themselves).
+static std::string _gameId; // game_id (sha1) of the item in focus, resolved via the host's index
+static std::u16string _topTitleText;
 
 // ---- Vídeo de gameplay por jogo (fundo da tela superior, .tgrv streamado do SD) ----
 // Formato .tgrv: header de 14 bytes ["TGRV", u16 w, u16 h, u16 fps, u32 frameCount] seguido de
@@ -198,14 +137,19 @@ static float _logoScaleDest = 0.0f;   // alvo da animação (0 = escondido, 1 = 
 #define VIDEO_START_DELAY 90   // frames parado no item antes de começar a carregar o vídeo (~1.5s)
 #define VIDEO_BG_ALPHA    102  // opacidade do brick por cima do vídeo (~40% de 255)
 #define VIDEO_FADE_STEP   12   // velocidade do fade do brick (alpha por frame)
-static u16  _videoFrame[256 * 192];   // frame atual decodificado (RGB15), em RAM
+// Buffers de vídeo: alocados sob demanda (ensureVideoBuffersAllocated(), chamado só de videoOpen())
+// em vez de arrays estáticos incondicionais -- com DSI_VIDEO_BG desligado, videoOpen() nunca roda
+// (loadGameLogo() só agenda vídeo se ms().dsiVideoBg, e tickLogoLoad() só chama videoOpen() se algo
+// foi agendado), então essas ~145KB nunca chegam a existir. Ponteiros por design: o acesso via
+// _videoFrame[i]/_vidRowMap[y]/etc. nos outros ~15 lugares deste arquivo não muda nada.
+static u16  *_videoFrame = NULL;      // frame atual decodificado (RGB15), em RAM -- 256*192 u16
 static bool _videoActive = false;     // reprodução em andamento (há frame válido)
 static FILE *_videoFile = NULL;       // arquivo .tgrv aberto no momento
 static int  _videoW = 0, _videoH = 0, _videoFps = 15, _videoFrameCount = 0, _videoFrameIdx = 0;
 static int  _videoFmt = 0;            // 0 = BGR555 (16bpp), 1 = PAL8 (8bpp paletado)
 static int  _videoFlags = 0;          // bit0 = pixels já têm bit15 (opaco)
-static u16  _videoPal[256];           // paleta (PAL8): u16 BGR555 com bit15
-static u8   _videoIdxBuf[256 * 192];  // índices do frame (PAL8) antes de expandir p/ _videoFrame
+static u16  *_videoPal = NULL;        // paleta (PAL8): u16 BGR555 com bit15 -- 256 entradas
+static u8   *_videoIdxBuf = NULL;     // índices do frame (PAL8) antes de expandir p/ _videoFrame -- 256*192 u8
 static int  _videoTickAccum = 0;      // acumulador de pacing (loop ~60fps -> vídeo a _videoFps)
 static int  _videoWhich = 0;          // 0 = top.tgrv, 1 = bottom.tgrv (alterna ao terminar)
 static int  _videoBgAlpha = 255;      // opacidade atual do brick (255 = opaco; anima p/ VIDEO_BG_ALPHA)
@@ -214,112 +158,41 @@ static std::string _pendingVideoBase; // base assets/<id> pendente ("" = nada); 
 static int  _pendingVideoDelay = 0;   // frames restantes até começar a abrir o vídeo
 // Upscale por nearest-neighbor: o vídeo pode ser menor que a tela (256x192) para poupar leitura
 // do SD. Estas LUTs mapeiam cada pixel da tela para o pixel-fonte do vídeo (sem divisão por pixel).
-static u8   _vidColMap[256];          // x-tela -> x-vídeo
-static u8   _vidRowMap[192];          // y-tela -> y-vídeo
+static u8   *_vidColMap = NULL;       // x-tela -> x-vídeo -- 256 entradas
+static u8   *_vidRowMap = NULL;       // y-tela -> y-vídeo -- 192 entradas
 
-// Carrega um BMP 4/8bpp do tema (magenta #FF00FF = transparente) para `pix`, calculando o
-// bounding box opaco (bx,by,bw,bh). Retorna false se não abrir/for inválido. Usado p/ titlebox
-// e startbox.
-static bool loadBoxBmp(const std::string &path, u16 *pix, int &outW, int &outH,
-                       int &bx, int &by, int &bw, int &bh, int maxH = TITLEBOX_MAXH) {
-	FILE *f = fopen(path.c_str(), "rb");
-	if (!f)
+// Bytes atualmente reservados p/ os 5 buffers acima (0 se nunca alocados -- p.ex. DSI_VIDEO_BG
+// desligado). Usado pelo debug menu (gatherDebugLines) pra refletir o consumo real, não um
+// tamanho fixo que nunca reflete o toggle.
+static size_t videoBufferBytes() {
+	if (!_videoFrame)
+		return 0;
+	return 256 * 192 * sizeof(u16) + 256 * 192 * sizeof(u8) + 256 * sizeof(u16) + 256 + 192;
+}
+
+// Aloca os 5 buffers de vídeo, 1x, sob demanda -- chamado só do início de videoOpen(). Falha limpa
+// (sem vídeo, como se o arquivo .tgrv não existisse) se DSI_VIDEO_BG estiver desligado -- essa
+// checagem é redundante com a de loadGameLogo() (só agenda vídeo se ms().dsiVideoBg), mas mantém a
+// garantia "sem a opção ligada, nenhum recurso de vídeo é alocado" no próprio alocador, não só nos
+// chamadores. Também falha limpo (libera tudo) se a RAM estiver curta demais pra caber os buffers.
+static bool ensureVideoBuffersAllocated() {
+	if (_videoFrame)
+		return true;
+	if (!ms().dsiVideoBg)
 		return false;
-	u8 hdr[54];
-	if (fread(hdr, 1, 54, f) != 54) { fclose(f); return false; }
-	u32 dataOff = hdr[10] | (hdr[11] << 8) | (hdr[12] << 16) | (hdr[13] << 24);
-	int w = hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24);
-	int h = hdr[22] | (hdr[23] << 8) | (hdr[24] << 16) | (hdr[25] << 24);
-	int bpp = hdr[28] | (hdr[29] << 8);
-	if ((bpp != 4 && bpp != 8) || w <= 0 || w > TITLEBOX_MAXW || h <= 0 || h > maxH) { fclose(f); return false; }
-
-	u16 pal[256];
-	bool trans[256] = {false};
-	int ncol = (int)(dataOff - 54) / 4;
-	fseek(f, 54, SEEK_SET);
-	for (int i = 0; i < ncol && i < 256; i++) {
-		u8 pe[4];
-		if (fread(pe, 1, 4, f) != 4) break;
-		u8 b = pe[0], g = pe[1], r = pe[2];
-		trans[i] = (r >= 248 && g <= 8 && b >= 248); // magenta #FF00FF => transparent
-		pal[i] = (r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10) | BIT(15);
-	}
-
-	// BMP rows padded to 4 bytes (4bpp = 2 pixels/byte, high nibble first).
-	int rowsz = (bpp == 4) ? ((((w + 1) / 2) + 3) & ~3) : ((w + 3) & ~3);
-	u8 rowbuf[TITLEBOX_MAXW + 4];
-	fseek(f, dataOff, SEEK_SET);
-	for (int yy = 0; yy < h; yy++) {
-		if (fread(rowbuf, 1, rowsz, f) != (size_t)rowsz) break;
-		int y = h - 1 - yy; // BMP is bottom-up
-		for (int x = 0; x < w; x++) {
-			u8 idx = (bpp == 4) ? ((x & 1) ? (rowbuf[x / 2] & 0xF) : (rowbuf[x / 2] >> 4)) : rowbuf[x];
-			pix[y * w + x] = trans[idx] ? 0 : pal[idx];
-		}
-	}
-	fclose(f);
-	outW = w;
-	outH = h;
-
-	// Locate the opaque box within the canvas. If nothing opaque, fall back to the whole asset.
-	int minX = w, minY = h, maxX = -1, maxY = -1;
-	for (int y = 0; y < h; y++)
-		for (int x = 0; x < w; x++)
-			if (pix[y * w + x]) {
-				if (x < minX) minX = x;
-				if (x > maxX) maxX = x;
-				if (y < minY) minY = y;
-				if (y > maxY) maxY = y;
-			}
-	if (maxX < 0) { minX = minY = 0; maxX = w - 1; maxY = h - 1; }
-	bx = minX; by = minY; bw = maxX - minX + 1; bh = maxY - minY + 1;
-	return true;
-}
-
-static void loadTitlebox() {
-	_titleboxLoaded = true;
-	loadBoxBmp(tfn().uiDirectory() + "/grf/topscreen_titlebox.bmp",
-	           _titleboxPix, _titleboxW, _titleboxH, _tbBoxX, _tbBoxY, _tbBoxW, _tbBoxH);
-}
-
-static void loadStartbox() {
-	_startboxLoaded = true;
-	_startboxHas = loadBoxBmp(tfn().uiDirectory() + "/grf/topscreen_startbox.bmp",
-	           _startboxPix, _startboxW, _startboxH, _sbBoxX, _sbBoxY, _sbBoxW, _sbBoxH);
-}
-
-static void loadStatusBar() {
-	_statusBarLoaded = true;
-	_statusBarHas = loadBoxBmp(tfn().uiDirectory() + "/grf/status_bar.bmp",
-	           _statusBarPix, _sbarW, _sbarH, _sbarBX, _sbarBY, _sbarBW, _sbarBH, STATUSBAR_MAXH);
-}
-
-// Estados de bateria mapeados de getBatteryLevel(): 0=vazia .. 4=cheia, 5=carregando.
-static const char *const _battFile[BATT_STATES] = {
-	"/battery/battery0.png", "/battery/battery1.png", "/battery/battery2.png",
-	"/battery/battery3.png", "/battery/battery4.png", "/battery/batterycharge.png",
-};
-
-static void loadBattery() {
-	_battLoaded = true;
-	for (int i = 0; i < BATT_STATES; i++) {
-		std::vector<unsigned char> img;
-		unsigned w = 0, h = 0;
-		if (lodepng::decode(img, w, h, tfn().uiDirectory() + _battFile[i]) != 0)
-			continue;
-		if (w == 0 || h == 0 || w > BATT_MAXW || h > BATT_MAXH)
-			continue;
-		_battW[i] = w;
-		_battH[i] = h;
-		for (unsigned y = 0; y < h; y++) {
-			for (unsigned x = 0; x < w; x++) {
-				unsigned o = (y * w + x) * 4;
-				u8 r = img[o], g = img[o + 1], b = img[o + 2], a = img[o + 3];
-				_battPix[i][y * BATT_MAXW + x] = (a >= 128)
-					? ((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10) | BIT(15)) : 0;
-			}
-		}
-	}
+	_videoFrame = new (std::nothrow) u16[256 * 192];
+	_videoIdxBuf = new (std::nothrow) u8[256 * 192];
+	_videoPal = new (std::nothrow) u16[256];
+	_vidColMap = new (std::nothrow) u8[256];
+	_vidRowMap = new (std::nothrow) u8[192];
+	if (_videoFrame && _videoIdxBuf && _videoPal && _vidColMap && _vidRowMap)
+		return true;
+	delete[] _videoFrame; _videoFrame = NULL;
+	delete[] _videoIdxBuf; _videoIdxBuf = NULL;
+	delete[] _videoPal; _videoPal = NULL;
+	delete[] _vidColMap; _vidColMap = NULL;
+	delete[] _vidRowMap; _vidRowMap = NULL;
+	return false;
 }
 
 // Remove aspas YAML e des-escapa \" \\; também faz trim.
@@ -395,42 +268,13 @@ static std::string resolveGameAssetsDir(const std::string &romName) {
 	return dsimenuDir() + "/assets/" + _gameId;
 }
 
-// Decodifica (lodepng) + escala o PNG do logo para _logoPix. CUSTOSO — só rodar em background.
-static void decodeLogoFile(const std::string &logoPath) {
-	_logoPresent = false;
-	std::vector<unsigned char> img;
-	unsigned w = 0, h = 0;
-	if (lodepng::decode(img, w, h, logoPath) != 0 || w == 0 || h == 0)
-		return;
-
-	// Integer scaling: escolhe o menor fator inteiro 1/N que cabe (amostragem uniforme de N em N).
-	const int maxW = 240, maxH = 120;
-	int N = 1;
-	while ((int)w / N > maxW || (int)h / N > maxH)
-		N++;
-	int tw = (int)w / N, th = (int)h / N;
-	if (tw < 1) tw = 1;
-	if (th < 1) th = 1;
-
-	for (int y = 0; y < th; y++) {
-		int syi = y * N; // passo exato N = downscale 1/N uniforme
-		for (int x = 0; x < tw; x++) {
-			int sxi = x * N;
-			int i = (syi * (int)w + sxi) * 4;
-			u8 r = img[i], g = img[i + 1], b = img[i + 2], a = img[i + 3];
-			_logoPix[y * 256 + x] = (a >= 128) ? ((r >> 3) | ((g >> 3) << 5) | ((b >> 3) << 10) | BIT(15)) : 0;
-		}
-	}
-	_logoW = tw;
-	_logoH = th;
-	_logoPresent = true;
-}
-
 // Abre um dos vídeos (0=top,1=bottom), lê+valida o header TGR2 (18 bytes) e a paleta (PAL8),
 // posicionando no início dos frames.
 // TGR2: magic"TGR2", u16 w, u16 h, u16 fps, u32 nframes, u8 fmt(0=BGR555/1=PAL8), u8 flags,
 //       u16 palCnt, [paleta palCnt*u16 se PAL8], depois nframes frames.
 static bool videoOpen(int which) {
+	if (!ensureVideoBuffersAllocated())
+		return false;
 	const std::string &p = which ? _videoBotPath : _videoTopPath;
 	if (p.empty())
 		return false;
@@ -528,14 +372,11 @@ static bool videoAdvance() {
 // Prioridade: índice do host (assets/<game_id>/logo.png). Fallback: logos.yml antigo.
 // Também para o vídeo atual e agenda o vídeo do novo jogo (se houver assets).
 void ThemeTextures::loadGameLogo(const std::string &romName) {
-	if (romName == _logoKey)
-		return; // já resolvido p/ este jogo
-	_logoKey = romName;
-	_logoScaleDest = 0.0f;  // zoom-out do logo anterior (pixels mantidos p/ encolher)
+	if (!gameLogo().beginItemChange(romName))
+		return; // já resolvido p/ este jogo (combined guard -- see GameLogoComponent)
+	gameTitle().onItemChanged(); // recomeça a contagem p/ trocar titlebox->startbox neste novo item
 	_gameId.clear();
-	_pendingLogoPath.clear(); // cancela qualquer decode agendado do item anterior
-	videoStop();              // para o vídeo do item anterior (brick volta a opaco no tick)
-	_boxSwapTimer = 0;        // recomeça a contagem p/ trocar titlebox->startbox neste novo item
+	videoStop(); // para o vídeo do item anterior (brick volta a opaco no tick)
 	if (romName.empty())
 		return;
 
@@ -558,11 +399,8 @@ void ThemeTextures::loadGameLogo(const std::string &romName) {
 		if (!logoFile.empty())
 			logoPath = base + "/logos/" + logoFile;
 	}
-	if (logoPath.empty())
-		return;
-
-	_pendingLogoPath = logoPath;         // agenda o decode
-	_pendingLogoDelay = LOGO_LOAD_DELAY;  // após estabilizar N frames
+	if (!logoPath.empty())
+		gameLogo().scheduleDecode(logoPath); // agenda o decode, após estabilizar N frames
 }
 
 // Roda no loop ocioso (uma vez por frame). Debounce: só decodifica após o item ficar estável.
@@ -570,28 +408,8 @@ void ThemeTextures::loadGameLogo(const std::string &romName) {
 void ThemeTextures::tickLogoLoad() {
 	bool needRedraw = false;
 
-	// 1) Decode deferido do logo: quando o item estabiliza, decodifica e arma o zoom-in.
-	if (!_pendingLogoPath.empty() && --_pendingLogoDelay <= 0) {
-		std::string path = _pendingLogoPath;
-		_pendingLogoPath.clear();
-		decodeLogoFile(path);          // custoso, mas só com o item estável (usuário parado)
-		if (_logoPresent) {
-			_logoScale = 0.0f;         // começa minúsculo...
-			_logoScaleDest = 1.0f;     // ...e cresce (zoom-in ao aparecer)
-		}
-	}
-
-	// 2) Anima a escala do logo rumo ao alvo.
-	if (_logoScale != _logoScaleDest) {
-		if (_logoScale < _logoScaleDest) {
-			_logoScale += LOGO_ZOOM_IN_STEP;
-			if (_logoScale > _logoScaleDest) _logoScale = _logoScaleDest;
-		} else {
-			_logoScale -= LOGO_ZOOM_OUT_STEP;
-			if (_logoScale < _logoScaleDest) _logoScale = _logoScaleDest;
-		}
-		needRedraw = true;
-	}
+	// 1-2) Decode deferido do logo + animação de zoom -- GameLogoComponent.
+	needRedraw |= gameLogo().update();
 
 	// 3) Início deferido do vídeo: após o item ficar parado, abre e lê o 1º frame (custoso).
 	if (!_pendingVideoBase.empty() && --_pendingVideoDelay <= 0) {
@@ -625,25 +443,8 @@ void ThemeTextures::tickLogoLoad() {
 		needRedraw = true;
 	}
 
-	// 6) Slide da caixa inferior: alterna titlebox<->startbox. A troca ocorre BOX_SWAP_DELAY frames
-	//    após o item ser selecionado (independente do vídeo; o timer reseta na troca de item, em
-	//    loadGameLogo). A caixa que sai "cai" (desce até sumir); troca; a que entra "sobe" (de baixo).
-	if (_boxSwapTimer < BOX_SWAP_DELAY) _boxSwapTimer++;
-	int wantKind = (_startboxHas && _boxSwapTimer >= BOX_SWAP_DELAY) ? 1 : 0;
-	int curBoxH = (_boxKind == 1) ? _sbBoxH : _tbBoxH;
-	if (_boxKind != wantKind) {
-		_boxSlide += BOX_SLIDE_STEP;                 // desce a caixa atual
-		if (_boxSlide >= curBoxH + TOPBOX_MARGIN + 1) {
-			_boxKind = wantKind;                     // sumiu -> troca de caixa
-			int newBoxH = (_boxKind == 1) ? _sbBoxH : _tbBoxH;
-			_boxSlide = newBoxH + TOPBOX_MARGIN + 1; // posiciona a nova totalmente abaixo p/ subir
-		}
-		needRedraw = true;
-	} else if (_boxSlide > 0) {
-		_boxSlide -= BOX_SLIDE_STEP;                 // sobe a caixa nova até o lugar
-		if (_boxSlide < 0) _boxSlide = 0;
-		needRedraw = true;
-	}
+	// 6) Slide da caixa inferior (titlebox<->startbox) -- GameTitleComponent.
+	needRedraw |= gameTitle().update();
 
 	if (needRedraw)
 		drawTopTitle(_topTitleText);   // recompõe o topo (logo animado e/ou vídeo/fade)
@@ -837,17 +638,28 @@ void ThemeTextures::loadBackgrounds() {
 		_backgroundTextures.emplace_back(TFN_BG_BOTTOMBUBBLEBG_DS, TFN_FALLBACK_BG_BOTTOMBUBBLEBG_DS);
 		return;
 	}
-	// DSi Theme
+	// DSi Theme (and HB/Saturn, which also fall through to here -- see loadHBTheme()/loadSaturnTheme())
+	//
+	// bottom_bubble ("hover over an icon" background swap) and bottom_moving ("drag to reorder"
+	// background) are loaded here but NEVER READ anywhere in the codebase for the DSi grid theme --
+	// verified by grepping every _backgroundTextures[N] access in this file: only index 0 (top),
+	// index 1 (bottom) and ms().macroMode (0 or 1, same two indices) are ever indexed. Makes sense:
+	// GridView's selection affordance is a zoom-scale on the icon itself (see FRONTEND.md §12), not
+	// a background swap on hover, and "move apps" drag-reorder is explicitly disabled for this theme
+	// (fileBrowse.cpp, `ms().theme != TWLSettings::EThemeDSi` on the move-apps entry condition) --
+	// the old carousel-only implementation was never adapted for the 2D grid. Skipping both for
+	// EThemeDSi saves ~192KB of heap (2 full-screen 256x192 backgrounds) plus 2 boot-time file
+	// reads, for a theme that will never display them. Left untouched for HB/Saturn (bubble) --
+	// not audited here, and "moving" was already DSi-only so dropping it there removes it entirely.
 	if (ms().macroMode) {
 		_backgroundTextures.emplace_back(TFN_BG_BOTTOMBG_MACRO, TFN_BG_BOTTOMBG, TFN_FALLBACK_BG_BOTTOMBG);
-		_backgroundTextures.emplace_back(TFN_BG_BOTTOMBUBBLEBG_MACRO, TFN_BG_BOTTOMBUBBLEBG, TFN_FALLBACK_BG_BOTTOMBUBBLEBG_MACRO);
-		if (ms().theme == TWLSettings::EThemeDSi) _backgroundTextures.emplace_back(TFN_BG_BOTTOMMOVINGBG_MACRO, TFN_BG_BOTTOMMOVINGBG, TFN_FALLBACK_BG_BOTTOMMOVINGBG);
+		if (ms().theme != TWLSettings::EThemeDSi)
+			_backgroundTextures.emplace_back(TFN_BG_BOTTOMBUBBLEBG_MACRO, TFN_BG_BOTTOMBUBBLEBG, TFN_FALLBACK_BG_BOTTOMBUBBLEBG_MACRO);
 	} else {
 		_backgroundTextures.emplace_back(TFN_BG_BOTTOMBG, TFN_FALLBACK_BG_BOTTOMBG);
-		_backgroundTextures.emplace_back(TFN_BG_BOTTOMBUBBLEBG, TFN_FALLBACK_BG_BOTTOMBUBBLEBG);
-		if (ms().theme == TWLSettings::EThemeDSi) _backgroundTextures.emplace_back(TFN_BG_BOTTOMMOVINGBG, TFN_FALLBACK_BG_BOTTOMMOVINGBG);
+		if (ms().theme != TWLSettings::EThemeDSi)
+			_backgroundTextures.emplace_back(TFN_BG_BOTTOMBUBBLEBG, TFN_FALLBACK_BG_BOTTOMBUBBLEBG);
 	}
-	
 }
 
 void ThemeTextures::loadHBTheme() {	
@@ -2071,22 +1883,7 @@ ITCM_CODE void ThemeTextures::drawDateTime(const char *str, int posX, int posY, 
 // erasing the previous title. Used by our fork so the title lives on the top screen.
 // Debug overlay on the top screen: FPS + texture VRAM usage (from the libnds allocator).
 void ThemeTextures::drawTopTitle(std::u16string_view text) {
-	FontGraphic *font = smallFont();
-	if (!font) return;
-	const int lineH = font->height();
-
 	_topTitleText.assign(text.begin(), text.end()); // guarda p/ redraw quando o logo terminar de carregar
-
-	if (!_titleboxLoaded)
-		loadTitlebox();
-	if (!_startboxLoaded)
-		loadStartbox();
-
-	// Anchor the box to the bottom of the top screen, centred horizontally; _boxSlide desloca
-	// verticalmente durante a animação de subir/cair.
-	const int margin = TOPBOX_MARGIN;
-	const int sx = (SCREEN_WIDTH - _tbBoxW) / 2;
-	const int sy = SCREEN_HEIGHT - _tbBoxH - margin + _boxSlide;
 
 	// Compose off-screen so the live framebuffer is never seen half-drawn (titlebox flicker).
 	// Restore the brick background first (clears the previous logo/title before redrawing).
@@ -2131,106 +1928,14 @@ void ThemeTextures::drawTopTitle(std::u16string_view text) {
 	}
 
 	// Game logo centred on the top screen, drawn FIRST so the box stays in front (layer behind).
-	// Scaled by _logoScale (zoom-in on appear / zoom-out on item change) via nearest-neighbor.
-	if (_logoPresent && _logoScale > 0.01f) {
-		int dw = (int)(_logoW * _logoScale);
-		int dh = (int)(_logoH * _logoScale);
-		if (dw < 1) dw = 1;
-		if (dh < 1) dh = 1;
-		int lx = (SCREEN_WIDTH - dw) / 2;
-		int ly = (SCREEN_HEIGHT - dh) / 2;
-		if (ly < 0) ly = 0;
-		// Drop shadow: silhueta do logo deslocada (LOGO_SHADOW_DX/DY), preto alpha-blendado sobre
-		// o fundo já composto. Desenhada ANTES do logo, então o logo fica por cima.
-		for (int y = 0; y < dh; y++) {
-			int sy = y * _logoH / dh;
-			if (sy >= _logoH) sy = _logoH - 1;
-			int py = ly + y + LOGO_SHADOW_DY;
-			if (py < 0 || py >= SCREEN_HEIGHT) continue;
-			for (int x = 0; x < dw; x++) {
-				int sx = x * _logoW / dw;
-				if (sx >= _logoW) sx = _logoW - 1;
-				if (!_logoPix[sy * 256 + sx]) continue; // só onde o logo é opaco
-				int px = lx + x + LOGO_SHADOW_DX;
-				if ((unsigned)px >= SCREEN_WIDTH) continue;
-				u16 &d = dst[py * SCREEN_WIDTH + px];
-				d = alphablend(RGB15(0, 0, 0) | BIT(15), d, LOGO_SHADOW_ALPHA);
-			}
-		}
-		// Logo por cima da sombra.
-		for (int y = 0; y < dh; y++) {
-			int sy = y * _logoH / dh;   // nearest-neighbor no eixo Y
-			if (sy >= _logoH) sy = _logoH - 1;
-			int py = ly + y;
-			if ((unsigned)py >= SCREEN_HEIGHT) break;
-			for (int x = 0; x < dw; x++) {
-				int sx = x * _logoW / dw; // nearest-neighbor no eixo X
-				if (sx >= _logoW) sx = _logoW - 1;
-				u16 p = _logoPix[sy * 256 + sx];
-				if (!p) continue;
-				int px = lx + x;
-				if ((unsigned)px < SCREEN_WIDTH)
-					dst[py * SCREEN_WIDTH + px] = p;
-			}
-		}
-	}
+	gameLogo().compose(dst);
 
-	if (_boxKind == 1 && _startboxHas) {
-		// Enquanto o vídeo toca: a titlebox+texto dão lugar à start box (grf/topscreen_startbox.bmp),
-		// ancorada no rodapé e centrada (+_boxSlide da animação). Sem texto de título.
-		const int bx = (SCREEN_WIDTH - _sbBoxW) / 2;
-		const int by = SCREEN_HEIGHT - _sbBoxH - margin + _boxSlide;
-		for (int y = 0; y < _sbBoxH; y++) {
-			int dy = by + y;
-			if (dy < 0 || dy >= SCREEN_HEIGHT) continue; // clip ao sair pelo rodapé
-			for (int x = 0; x < _sbBoxW; x++) {
-				u16 p = _startboxPix[(_sbBoxY + y) * _startboxW + (_sbBoxX + x)];
-				if (p)
-					dst[dy * SCREEN_WIDTH + bx + x] = p;
-			}
-		}
-	} else {
-		// Blit the box (from its location in the asset) to the bottom of the top screen.
-		// Opaque pixels overwrite (clearing any previous text inside), transparent shows the brick.
-		for (int y = 0; y < _tbBoxH; y++) {
-			int dy = sy + y;
-			if (dy < 0 || dy >= SCREEN_HEIGHT) continue; // clip ao sair pelo rodapé
-			for (int x = 0; x < _tbBoxW; x++) {
-				u16 p = _titleboxPix[(_tbBoxY + y) * _titleboxW + (_tbBoxX + x)];
-				if (p)
-					dst[dy * SCREEN_WIDTH + sx + x] = p;
-			}
-		}
-
-		int nLines = 1;
-		for (size_t p = 0; p < text.size(); p++)
-			if (text[p] == u'\n') nLines++;
-		// Centre the text block vertically inside the box.
-		int posY = sy + _tbBoxH / 2 - (nLines * lineH) / 2;
-
-		// Draw each line centred, in black.
-		size_t start = 0;
-		int line = 0;
-		while (true) {
-			size_t nl = text.find(u'\n', start);
-			std::u16string_view ln = text.substr(start, (nl == std::u16string_view::npos) ? text.size() - start : nl - start);
-			int y0 = posY + line * lineH;
-			toncset16(FontGraphic::textBuf[1], 0, SCREEN_WIDTH * lineH);
-			font->print(0, 0, true, ln, Alignment::center, FontPalette::regular);
-			for (int y = 0; y < lineH && y0 + y < SCREEN_HEIGHT; y++) {
-				if (y0 + y < 0) continue;
-				for (int x = 0; x < SCREEN_WIDTH; x++)
-					if (FontGraphic::textBuf[1][y * SCREEN_WIDTH + x])
-						dst[(y0 + y) * SCREEN_WIDTH + x] = RGB15(0, 0, 0) | BIT(15);
-			}
-			if (nl == std::u16string_view::npos) break;
-			start = nl + 1;
-			line++;
-		}
-	}
+	// Title box (+ text) or, once idle long enough, the "press start" prompt box instead --
+	// anchored to the bottom of the top screen.
+	gameTitle().compose(dst, text);
 
 	// Barra de status por cima de tudo (titlebox/startbox/logo/texto), na composição do topo.
-	composeStatusBar(dst);
+	statusBar().compose(dst);
 
 	// Present the finished frame in a single contiguous copy (no visible half-draw).
 	tonccpy(BG_GFX_SUB, dst, sizeof(u16) * SCREEN_WIDTH * SCREEN_HEIGHT);
@@ -2240,32 +1945,125 @@ void ThemeTextures::drawTopTitle(std::u16string_view text) {
 // Mostra FPS do loop principal (revela drops), polígonos/vértices em HW no último frame 3D, e a
 // VRAM de textura ocupada pelos bancos de ícone (banco A, 128KB). Desenhado direto no BG_GFX_SUB
 // a cada frame, DEPOIS da composição do topo, então nunca é sobrescrito pelo drawTopTitle.
-void ThemeTextures::drawTopDebug() {
-	static int acc = 0;        // quadros contados no segundo atual
-	static time_t last = 0;    // segundo (RTC) da última atualização
-	static int fps = 0;        // valor exibido
+namespace {
+struct NamedSize { const char *name; size_t bytes; };
+
+// Preenche `out[3]` com as 3 maiores entradas de `items[0..n)`, maior primeiro. n pode ser < 3 (o
+// resto fica zerado). Seleção simples (n é sempre pequeno aqui, ≤6) -- não precisa de std::sort.
+void top3(const NamedSize *items, int n, NamedSize out[3]) {
+	for (int i = 0; i < 3; i++) out[i] = {"-", 0};
+	for (int i = 0; i < n; i++) {
+		for (int slot = 0; slot < 3; slot++) {
+			if (items[i].bytes > out[slot].bytes) {
+				for (int s = 2; s > slot; s--) out[s] = out[s - 1];
+				out[slot] = items[i];
+				break;
+			}
+		}
+	}
+}
+// Contador de fps: SEMPRE roda 1x/frame (chamado de drawTopDebug() incondicionalmente, barato --
+// um incremento e uma comparação de time_t), independente de o overlay abaixo redesenhar ou não
+// neste frame. Separado de gatherDebugLines() de propósito: se contássemos frames só quando o
+// overlay redesenha (agora throttled, ver drawTopDebug), o fps mostrado ficaria errado (~1/6 do
+// real). capturePerfLog() (captura sob demanda, não roda todo frame) só LÊ o último valor.
+static int _lastFps = 0;
+static void tickFpsCounter() {
+	static int acc = 0;
+	static time_t last = 0;
 	acc++;
 	time_t now = time(NULL);
-	if (now != last) { fps = acc; acc = 0; last = now; }
+	if (now != last) { _lastFps = acc; acc = 0; last = now; }
+}
+
+} // namespace
+
+// Junta as métricas do debug menu (fps, custo de renderização por frame, heap, VRAM, e os maiores
+// consumidores de RAM/VRAM conhecidos do frontend) numa lista de linhas de texto pronta. Usada tanto
+// pelo overlay em tela (drawTopDebug, throttled) quanto pela captura em arquivo (capturePerfLog, sob
+// demanda via L+R) -- assim as duas fontes NUNCA divergem sobre o que cada número significa.
+int ThemeTextures::gatherDebugLines(int fps, char lines[DEBUG_LINE_COUNT][32]) {
+	// Métricas ao vivo do render 3D (tela inferior gl2d).
+	int polys = 0, verts = 0;
+	glGetInt(GL_GET_POLYGON_RAM_COUNT, &polys);
+	glGetInt(GL_GET_VERTEX_RAM_COUNT, &verts);
+
+	// VRAM de textura: bancos de ícone (cada um 32x256 4bpp = 4KB) ocupam o banco A (128KB).
+	// iconActiveBankCount()+1 é a contagem real em uso (geometria do tema), não um 25 fixo.
+	const int iconVramK = (iconActiveBankCount() + 1) * 4;
+
+	// Heap (malloc/new -- Texture/glImage/std::string/std::vector, etc.): NÃO inclui os buffers
+	// estáticos abaixo (esses nunca passam por malloc), por isso o ranking de RAM ao lado é
+	// necessário pra completar o quadro -- juntos cobrem tanto a alocação dinâmica quanto a estática.
+	struct mallinfo mi = mallinfo();
+	const int heapUsedK = mi.uordblks / 1024, heapFreeK = mi.fordblks / 1024;
+
+	// RAM: maiores buffers estáticos da renderização do frontend do tema grid (nunca passam por
+	// malloc, por isso mallinfo() acima não os vê). _menuBgBuffer/_menuBgDither/_topCompose são
+	// estáticos deste arquivo (ThemeTextures.cpp); os *Component:: são os buffers de pixel dos
+	// componentes do HUD superior (graphics/components/). VideoBuf é alocado sob demanda (0 se
+	// DSI_VIDEO_BG estiver desligado -- ver videoBufferBytes()/ensureVideoBuffersAllocated() --
+	// esse aqui continua heap, é um único bloco isolado, não o padrão que causou pressão no heap).
+	NamedSize ramItems[] = {
+		{"TopCompose", sizeof(_menuBgBuffer) + sizeof(_menuBgDither) + sizeof(_topCompose)},
+		{"VideoBuf",   videoBufferBytes()},
+		{"TitleBox",   GameTitleComponent::ramFootprintBytes()},
+		{"GameLogo",   GameLogoComponent::ramFootprintBytes()},
+		{"StatusBar",  StatusBarComponent::ramFootprintBytes()},
+		{"Battery",    BatteryComponent::ramFootprintBytes()},
+	};
+	NamedSize ramTop[3];
+	top3(ramItems, 6, ramTop);
+
+	// VRAM: bancos de ícone (dinâmico, ver acima) + as maiores texturas de UI paletizadas do tema
+	// (carregadas 1x no boot, ficam como membros desta classe -- texLength() é em u16, daí *2 bytes).
+	NamedSize vramItems[] = {
+		{"IconBanks", (size_t)iconVramK * 1024},
+		{"box",       _boxTexture ? _boxTexture->texLength() * 2 : 0},
+		{"folder",    _folderTexture ? _folderTexture->texLength() * 2 : 0},
+		{"dialogbox", _dialogBoxTexture ? _dialogBoxTexture->texLength() * 2 : 0},
+		{"startbrd",  _startBorderTexture ? _startBorderTexture->texLength() * 2 : 0},
+		{"bubble",    _bubbleTexture ? _bubbleTexture->texLength() * 2 : 0},
+	};
+	NamedSize vramTop[3];
+	top3(vramItems, 6, vramTop);
+
+	int l = 0;
+	sprintf(lines[l++], "%d fps  R%d%%", fps, vblankWorkPercent());
+	sprintf(lines[l++], "P%d V%d", polys, verts);
+	sprintf(lines[l++], "Heap %dK/%dK", heapUsedK, heapUsedK + heapFreeK);
+	sprintf(lines[l++], "VRAM %d/128K", iconVramK);
+	for (int i = 0; i < 3; i++)
+		sprintf(lines[l++], "R%d %s %uK", i + 1, ramTop[i].name, (unsigned)(ramTop[i].bytes / 1024));
+	for (int i = 0; i < 3; i++)
+		sprintf(lines[l++], "V%d %s %uK", i + 1, vramTop[i].name, (unsigned)(vramTop[i].bytes / 1024));
+	return l;
+}
+
+// DEBUG: overlay (fps, custo de renderização, heap, VRAM, top-3 consumidores de RAM e VRAM) no
+// canto superior-esquerdo da tela superior. Chamado 1x/frame; o redesenho em si é throttled (ver
+// abaixo) mas o contador de fps é atualizado todo frame independente disso.
+void ThemeTextures::drawTopDebug() {
+	tickFpsCounter(); // sempre, barato -- ver comentário na definição
+
+	// O desenho em si é caro: preenche a box E redesenha o texto pixel-a-pixel direto no VRAM da
+	// tela superior (BG_GFX_SUB), e essa box agora tem 10 linhas x 132px (a versão original de 3
+	// linhas x 92px já tinha esse custo, mas ~4x menor). Redesenhar isso a 60Hz foi o que derrubou o
+	// framerate da tela superior pela metade quando o overlay cresceu -- a informação não muda tão
+	// rápido a ponto de precisar de 60Hz mesmo, então redesenha só a cada 6 frames (~10Hz).
+	static int frameCounter = 0;
+	if (++frameCounter < 6)
+		return;
+	frameCounter = 0;
 
 	FontGraphic *font = smallFont();
 	if (!font) return;
 	const int lineH = font->height();
 
-	// Métricas ao vivo do render 3D (tela inferior gl2d).
-	int polys = 0, verts = 0;
-	glGetInt(GL_GET_POLYGON_RAM_COUNT, &polys);
-	glGetInt(GL_GET_VERTEX_RAM_COUNT, &verts);
-	// VRAM de textura: bancos de ícone (cada um 32x256 4bpp = 4KB) ocupam o banco A (128KB).
-	const int vramUsedK = (NDS_ICON_BANK_COUNT * 4);
+	char lines[DEBUG_LINE_COUNT][32];
+	const int n = gatherDebugLines(_lastFps, lines);
 
-	// Três linhas de texto.
-	char lines[3][20];
-	sprintf(lines[0], "%d fps", fps);
-	sprintf(lines[1], "P%d V%d", polys, verts);
-	sprintf(lines[2], "VRAM %d/128K", vramUsedK);
-
-	const int boxW = 92, boxH = lineH * 3 + 4;
+	const int boxW = 132, boxH = lineH * n + 4;
 
 	// Box preta opaca.
 	for (int y = 0; y < boxH && y < SCREEN_HEIGHT; y++)
@@ -2273,7 +2071,7 @@ void ThemeTextures::drawTopDebug() {
 			BG_GFX_SUB[y * SCREEN_WIDTH + x] = RGB15(0, 0, 0) | BIT(15);
 
 	// Texto branco dentro da box, uma linha por métrica.
-	for (int l = 0; l < 3; l++) {
+	for (int l = 0; l < n; l++) {
 		std::u16string s = FontGraphic::utf8to16(lines[l]);
 		toncset16(FontGraphic::textBuf[1], 0, SCREEN_WIDTH * lineH);
 		font->print(0, 0, true, s, Alignment::left, FontPalette::regular);
@@ -2285,128 +2083,37 @@ void ThemeTextures::drawTopDebug() {
 	}
 }
 
+// Grava o snapshot atual do debug menu (as mesmas linhas do overlay acima) em
+// _nds/TWiLightMenu/dsimenu_perf.log, uma captura por chamada (append, nunca sobrescreve). Chamado
+// quando o usuário segura L+R por ~1s com o debug menu ativo (ver fileBrowse.cpp) -- uma ação
+// explícita do usuário, por isso grava independente do toggle geral ms().logging (common/logging.h)
+// usado pelo log.txt de debug do boot.
+void ThemeTextures::capturePerfLog() {
+	char lines[DEBUG_LINE_COUNT][32];
+	const int n = gatherDebugLines(_lastFps, lines); // lê o último fps conhecido; não conta como frame
+
+	const std::string path = (sys().isRunFromSD() ? "sd:" : "fat:") + std::string("/_nds/TWiLightMenu/dsimenu_perf.log");
+	FILE *f = fopen(path.c_str(), "a");
+	if (!f)
+		return;
+	fprintf(f, "---- %s ----\r\n", retTime().c_str());
+	for (int l = 0; l < n; l++)
+		fprintf(f, "%s\r\n", lines[l]);
+	fclose(f);
+}
+
 // Recompõe a tela superior a partir do título atual. Usado para limpar o overlay de debug residual
 // quando ele é desligado (o drawTopTitle sozinho só roda em needRedraw, então a box ficaria parada).
 void ThemeTextures::redrawTop() {
 	drawTopTitle(_topTitleText);
 }
 
-// Barra de status no canto superior direito da tela superior: fundo (grf/status_bar.bmp) + hora
-// (à esquerda, preto) + ícone de bateria (à direita). Desenha no buffer `dst` — quando é o
-// _topCompose (dentro do drawTopTitle) fica por cima da titlebox/startbox; quando é o BG_GFX_SUB
-// (1x/frame) mantém o relógio vivo no ocioso.
-void ThemeTextures::composeStatusBar(u16 *dst) {
-	if (!_statusBarLoaded) loadStatusBar();
-	if (!_statusBarHas) return;
-	if (!_battLoaded) loadBattery();
-
-	const int barX = SCREEN_WIDTH - _sbarW; // ancorada à direita, no topo
-	const int barY = 0;
-
-	// Fundo da barra (0 = magenta transparente -> pula, mostra o que já estava no topo).
-	for (int y = 0; y < _sbarH; y++) {
-		int dy = barY + y;
-		if ((unsigned)dy >= SCREEN_HEIGHT) continue;
-		for (int x = 0; x < _sbarW; x++) {
-			u16 p = _statusBarPix[y * _sbarW + x];
-			if (!p) continue;
-			int dx = barX + x;
-			if ((unsigned)dx >= SCREEN_WIDTH) continue;
-			dst[dy * SCREEN_WIDTH + dx] = p;
-		}
-	}
-
-	// Layout: hora (esquerda) + bateria (direita, posição fixa).
-	int lvl = getBatteryLevel();
-	int st = (lvl >= 7) ? 5 : (lvl < 0 ? 0 : (lvl > 4 ? 4 : lvl));
-	int iw = _battW[st], ih = _battH[st];
-
-	// Registra o conteúdo desenhado agora (usado por tickStatusBar p/ recompor só quando muda).
-	std::string timeStr = retTime();
-	_lastStatusTime = timeStr;
-	_lastStatusBatt = lvl;
-
-	FontGraphic *font = smallFont();
-	const int lineH = font ? font->height() : 0;
-	std::u16string t;
-	int tw = 0;           // largura nativa do texto da hora (com tracking entre caracteres)
-	int twS = 0, thS = 0; // largura/altura já reduzidas (escala SB_TIME_NUM/DEN)
-	if (font) {
-		t = FontGraphic::utf8to16(timeStr);
-		for (size_t i = 0; i < t.size(); i++) {
-			tw += font->calcWidth(std::u16string(1, t[i]));
-			if (i + 1 < t.size()) tw += SB_TIME_TRACKING;
-		}
-		twS = tw * SB_TIME_NUM / SB_TIME_DEN;
-		thS = lineH * SB_TIME_NUM / SB_TIME_DEN;
-	}
-
-	const int gap = 5; // folga entre a hora e a bateria
-
-	// Bateria ancorada à direita da barra, em posição FIXA: mudanças na largura da hora não a empurram.
-	int ix = barX + _sbarW - SB_BATT_RIGHT_INSET - (iw > 0 ? iw : 0);
-	int iy = barY + (_sbarH - ih) / 2;
-
-	// Hora à ESQUERDA da bateria, alinhada à direita (cresce para a esquerda a partir de um ponto fixo).
-	// Em preto, reduzida com OR-downsample (acende o pixel de destino se QUALQUER pixel-fonte na sua
-	// célula estiver aceso), preservando os traços finos da fonte.
-	if (font && twS > 0) {
-		toncset16(FontGraphic::textBuf[1], 0, SCREEN_WIDTH * lineH);
-		int penX = 0; // renderiza caractere-a-caractere com tracking extra entre eles
-		for (size_t i = 0; i < t.size(); i++) {
-			std::u16string ch(1, t[i]);
-			font->print(penX, 0, true, ch, Alignment::left, FontPalette::regular);
-			penX += font->calcWidth(ch) + SB_TIME_TRACKING;
-			if (penX >= SCREEN_WIDTH) break;
-		}
-		int txRight = ix - ((iw > 0) ? gap : 0); // borda direita fixa do campo de horas
-		int tx = txRight - twS;                  // início do texto (cresce p/ a esquerda)
-		int ty = barY + (_sbarH - thS) / 2;
-		for (int y = 0; y < thS; y++) {
-			int dy = ty + y;
-			if ((unsigned)dy >= SCREEN_HEIGHT) continue;
-			int sy0 = y * lineH / thS, sy1 = (y + 1) * lineH / thS;
-			if (sy1 <= sy0) sy1 = sy0 + 1;
-			for (int x = 0; x < twS; x++) {
-				int sx0 = x * tw / twS, sx1 = (x + 1) * tw / twS;
-				if (sx1 <= sx0) sx1 = sx0 + 1;
-				bool on = false;
-				for (int sy = sy0; sy < sy1 && !on; sy++)
-					for (int sx = sx0; sx < sx1; sx++)
-						if (FontGraphic::textBuf[1][sy * SCREEN_WIDTH + sx]) { on = true; break; }
-				if (!on) continue;
-				int dx = tx + x;
-				if ((unsigned)dx >= SCREEN_WIDTH) continue;
-				dst[dy * SCREEN_WIDTH + dx] = RGB15(0, 0, 0) | BIT(15);
-			}
-		}
-	}
-
-	// Bateria na posição fixa calculada acima (ix, iy).
-	if (iw > 0) {
-		for (int y = 0; y < ih; y++) {
-			int dy = iy + y;
-			if ((unsigned)dy >= SCREEN_HEIGHT) continue;
-			for (int x = 0; x < iw; x++) {
-				u16 p = _battPix[st][y * BATT_MAXW + x];
-				if (!p) continue;
-				int dx = ix + x;
-				if ((unsigned)dx >= SCREEN_WIDTH) continue;
-				dst[dy * SCREEN_WIDTH + dx] = p;
-			}
-		}
-	}
-}
-
 // Chamado 1x/frame no loop ocioso. NÃO desenha por frame (isso causava flicker da bateria no
 // hardware: escrita pixel-a-pixel no BG_GFX_SUB durante o scanout). Em vez disso, só recompõe o topo
-// (drawTopTitle -> apresenta de uma vez) QUANDO a hora ou a bateria mudam.
+// (drawTopTitle -> apresenta de uma vez) QUANDO a hora ou a bateria mudam -- StatusBarComponent.
 void ThemeTextures::tickStatusBar() {
-	if (!_statusBarLoaded) loadStatusBar();
-	if (!_statusBarHas) return;
-	if (!_battLoaded) loadBattery();
-	if (retTime() != _lastStatusTime || getBatteryLevel() != _lastStatusBatt)
-		redrawTop(); // recompõe o topo (composeStatusBar roda no fim do drawTopTitle e atualiza o estado)
+	if (statusBar().needsRedraw())
+		redrawTop(); // recompõe o topo (StatusBarComponent::compose roda no fim do drawTopTitle)
 }
 
 ITCM_CODE void ThemeTextures::drawDateTimeMacro(const char *str, int posX, int posY, bool isDate) {

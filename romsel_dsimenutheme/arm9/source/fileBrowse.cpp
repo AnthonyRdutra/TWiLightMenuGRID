@@ -20,7 +20,9 @@
 #include "SwitchState.h"
 #include "errorScreen.h"
 #include "graphics/ThemeConfig.h"
+#include "graphics/ThemeLayout.h"
 #include "graphics/ThemeTextures.h"
+#include "graphics/components/GridView.h"
 #include "graphics/fontHandler.h"
 #include "graphics/graphics.h"
 #include "graphics/iconHandler.h"
@@ -486,20 +488,12 @@ void displayNowLoading(void) {
 	showProgressIcon = true;
 }
 
-// 3-row carousel column spacing (must match the render in graphics.cpp).
-#define ROW3_COL_SPACING 48
-
-// Number of columns to the left/right of the selected one that the carousel keeps loaded/drawn
-// (8-column window = 4 left + selected + 3 right). Column-major: column c = items {3c,3c+1,3c+2};
-// bank = item % NDS_ICON_LIST_BANKS (24), so the 24 windowed items occupy distinct banks.
-#define ROW3_COLS_LEFT 4
-#define ROW3_COLS_RIGHT 3
-
-// Loads one column's 3 items into their icon banks.
-static void loadRow3Column(const std::vector<DirEntry> &dc, int col) {
+// Loads one column's items into their icon banks.
+static void loadGridColumn(const std::vector<DirEntry> &dc, int col) {
 	if (col < 0) return;
-	for (int r = 0; r < 3; r++) {
-		int i = col * 3 + r;
+	const int rows = gridView().rows();
+	for (int r = 0; r < rows; r++) {
+		int i = col * rows + r;
 		if (i > last_used_box) break;
 		if (i + PAGENUM * 40 < (int)dc.size()) {
 			bgOperations(true);
@@ -508,22 +502,24 @@ static void loadRow3Column(const std::vector<DirEntry> &dc, int col) {
 	}
 }
 
-// Loads the whole 8-column window around the selection (used on entry / page changes).
-static void loadRow3WindowIcons(const std::vector<DirEntry> &dc) {
-	int selCol = CURPOS / 3;
-	for (int c = selCol - ROW3_COLS_LEFT; c <= selCol + ROW3_COLS_RIGHT; c++)
-		loadRow3Column(dc, c);
+// Loads the whole column window around the selection (used on entry / page changes).
+static void loadGridWindowIcons(const std::vector<DirEntry> &dc) {
+	int selCol = CURPOS / gridView().rows();
+	for (int c = selCol - gridView().colsLeft(); c <= selCol + gridView().colsRight(); c++)
+		loadGridColumn(dc, c);
 }
 
-// 3-row carousel navigation: dCol moves columns (spin), dRow moves rows within the centred
-// column. CURPOS = col*3 + row. No slide animation in this function; the scroll target
-// (titleboxXdest) is set so the frame handler slides the selected column to centre.
-void moveCursor3Row(int dCol, int dRow, const std::vector<DirEntry> &dc) {
+// Grid navigation: dCol moves columns (spin), dRow moves rows within the centred column.
+// CURPOS = col*rows + row. No slide animation in this function; the scroll target is set on
+// GridView (its own scroll state -- see GridView.h) so the frame handler slides the selected
+// column to centre.
+void moveCursorGrid(int dCol, int dRow, const std::vector<DirEntry> &dc) {
 	FLOG_FN();
-	int selCol = CURPOS / 3, selRow = CURPOS % 3;
+	const int rows = gridView().rows();
+	int selCol = CURPOS / rows, selRow = CURPOS % rows;
 	int newCol = selCol + dCol, newRow = selRow + dRow;
-	int target = newCol * 3 + newRow;
-	if (newCol < 0 || newRow < 0 || newRow > 2 || target < 0 || target > last_used_box) {
+	int target = newCol * rows + newRow;
+	if (newCol < 0 || newRow < 0 || newRow > rows - 1 || target < 0 || target > last_used_box) {
 		if (!edgeBumpSoundPlayed)
 			snd().playWrong();
 		edgeBumpSoundPlayed = true;
@@ -537,15 +533,15 @@ void moveCursor3Row(int dCol, int dRow, const std::vector<DirEntry> &dc) {
 	bannerTextShown = false; // title (top screen) will be refreshed by the browse loop
 
 	// Centre the selected column (slide handled by frameRateHandler).
-	titleboxXdest[ms().secondaryDevice] = (CURPOS / 3) * ROW3_COL_SPACING;
+	gridView().scrollToColumn(CURPOS / rows, ms().secondaryDevice);
 
 	// On a column change only the newly-entered column needs loading (keeps spinning snappy).
-	int newCol2 = CURPOS / 3;
+	int newCol2 = CURPOS / rows;
 	if (newCol2 != oldCol) {
 		if (newCol2 > oldCol)
-			loadRow3Column(dc, newCol2 + ROW3_COLS_RIGHT); // entered on the right
+			loadGridColumn(dc, newCol2 + gridView().colsRight()); // entered on the right
 		else
-			loadRow3Column(dc, newCol2 - ROW3_COLS_LEFT);  // entered on the left
+			loadGridColumn(dc, newCol2 - gridView().colsLeft());  // entered on the left
 	}
 
 	snd().playSelect();
@@ -2913,30 +2909,35 @@ void getFileInfo(SwitchState scrn, vector<vector<DirEntry>> dirContents, bool re
 		progressBarLength = 0;
 		if (ms().theme != TWLSettings::EThemeSaturn && ms().theme != TWLSettings::EThemeHBL) fadeType = false; // Fade to white
 	}
-	// Load correct icons depending on cursor position
-	if (CURPOS <= 1) {
-		for (int i = 0; i < 5; i++) {
-			if (i + PAGENUM * 40 < file_count) {
-				bgOperations(true);
-				iconUpdate(dirContents[scrn].at(i + PAGENUM * 40).isDirectory,
-					   dirContents[scrn].at(i + PAGENUM * 40).name.c_str(), i);
+	// Load correct icons depending on cursor position. The grid preloads its own column window
+	// separately (loadGridWindowIcons(), called by every DSi-reachable caller of this function
+	// right after it returns) -- this flat "N icons around CURPOS" shape is the single-row
+	// carousel's own preload pattern and would load the wrong set of icons for a 2D grid.
+	if (ms().theme != TWLSettings::EThemeDSi) {
+		if (CURPOS <= 1) {
+			for (int i = 0; i < 5; i++) {
+				if (i + PAGENUM * 40 < file_count) {
+					bgOperations(true);
+					iconUpdate(dirContents[scrn].at(i + PAGENUM * 40).isDirectory,
+						   dirContents[scrn].at(i + PAGENUM * 40).name.c_str(), i);
+				}
 			}
-		}
-	} else if (CURPOS >= 2 && CURPOS <= 36) {
-		for (int i = 0; i < 6; i++) {
-			if ((CURPOS - 2 + i) + PAGENUM * 40 < file_count) {
-				bgOperations(true);
-				iconUpdate(dirContents[scrn].at((CURPOS - 2 + i) + PAGENUM * 40).isDirectory,
-					   dirContents[scrn].at((CURPOS - 2 + i) + PAGENUM * 40).name.c_str(),
-					   CURPOS - 2 + i);
+		} else if (CURPOS >= 2 && CURPOS <= 36) {
+			for (int i = 0; i < 6; i++) {
+				if ((CURPOS - 2 + i) + PAGENUM * 40 < file_count) {
+					bgOperations(true);
+					iconUpdate(dirContents[scrn].at((CURPOS - 2 + i) + PAGENUM * 40).isDirectory,
+						   dirContents[scrn].at((CURPOS - 2 + i) + PAGENUM * 40).name.c_str(),
+						   CURPOS - 2 + i);
+				}
 			}
-		}
-	} else if (CURPOS >= 37 && CURPOS <= 39) {
-		for (int i = 0; i < 5; i++) {
-			if ((35 + i) + PAGENUM * 40 < file_count) {
-				bgOperations(true);
-				iconUpdate(dirContents[scrn].at((35 + i) + PAGENUM * 40).isDirectory,
-					   dirContents[scrn].at((35 + i) + PAGENUM * 40).name.c_str(), 35 + i);
+		} else if (CURPOS >= 37 && CURPOS <= 39) {
+			for (int i = 0; i < 5; i++) {
+				if ((35 + i) + PAGENUM * 40 < file_count) {
+					bgOperations(true);
+					iconUpdate(dirContents[scrn].at((35 + i) + PAGENUM * 40).isDirectory,
+						   dirContents[scrn].at((35 + i) + PAGENUM * 40).name.c_str(), 35 + i);
+				}
 			}
 		}
 	}
@@ -2979,6 +2980,10 @@ static bool previousPage(SwitchState scrn, vector<vector<DirEntry>> dirContents)
 	settingsChanged = false;
 	if (showLshoulder) {
 		displayNowLoading();
+	} else if (ms().theme == TWLSettings::EThemeDSi) {
+		loadGridWindowIcons(dirContents[scrn]);
+		whiteScreen = false;
+		fadeType = true; // Fade in from white
 	} else {
 		// Load correct icons depending on cursor position
 		if (CURPOS <= 1) {
@@ -3036,6 +3041,10 @@ static bool nextPage(SwitchState scrn, vector<vector<DirEntry>> dirContents) {
 	} else {
 		CURPOS = (file_count - 1) - PAGENUM * 40;
 		if (CURPOS < 0) CURPOS = 0;
+		// CURPOS can land anywhere on the last page here (not just 0), so unlike the branch
+		// above this needs the grid's own column formula, not the carousel's per-item one.
+		if (ms().theme == TWLSettings::EThemeDSi)
+			gridView().jumpToItem(CURPOS, ms().secondaryDevice);
 		titleboxXdest[ms().secondaryDevice] = CURPOS * titleboxXspacing;
 		titlewindowXdest[ms().secondaryDevice] = CURPOS * 5;
 	}
@@ -3057,6 +3066,10 @@ static bool nextPage(SwitchState scrn, vector<vector<DirEntry>> dirContents) {
 	settingsChanged = false;
 	if (showRshoulder) {
 		displayNowLoading();
+	} else if (ms().theme == TWLSettings::EThemeDSi) {
+		loadGridWindowIcons(dirContents[scrn]);
+		whiteScreen = false;
+		fadeType = true; // Fade in from white
 	} else {
 		// Load correct icons depending on cursor position
 		if (CURPOS <= 1) {
@@ -3336,6 +3349,8 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 	if (CURPOS > last_used_box)
 	{
 		CURPOS = last_used_box;
+		if (ms().theme == TWLSettings::EThemeDSi)
+			gridView().jumpToItem(CURPOS, ms().secondaryDevice);
 		titleboxXpos[ms().secondaryDevice]     = CURPOS * titleboxXspacing;
 		titleboxXdest[ms().secondaryDevice]    = CURPOS * titleboxXspacing;
 		titlewindowXpos[ms().secondaryDevice]  = CURPOS * 5;
@@ -3346,7 +3361,7 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 		updateDirectoryContents(dirContents[scrn]);
 		getFileInfo(scrn, dirContents, true);
 		if (ms().theme == TWLSettings::EThemeDSi)
-			loadRow3WindowIcons(dirContents[scrn]); // preload the 8-column window
+			loadGridWindowIcons(dirContents[scrn]); // preload the column window
 		reloadIconPalettes();
 		if (ms().theme != TWLSettings::EThemeSaturn && ms().theme != TWLSettings::EThemeHBL) {
 			while (!screenFadedOut()) { swiWaitForVBlank(); }
@@ -3428,12 +3443,26 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 				held = keysDownRepeat();
 				touchRead(&touch);
 
-				// 3-row carousel: keep the selected column centred (also fixes startup positioning).
+				// Grid: keep the selected column centred (also fixes startup positioning).
 				if (ms().theme == TWLSettings::EThemeDSi) {
-					titleboxXdest[ms().secondaryDevice] = (CURPOS / 3) * ROW3_COL_SPACING;
+					gridView().scrollToColumn(CURPOS / gridView().rows(), ms().secondaryDevice);
 					tex().tickLogoLoad(); // decode deferido do logo no ocioso (não trava a navegação)
-					if (ms().dsiDebugMenu)
+					if (ms().dsiDebugMenu) {
 						tex().drawTopDebug(); // overlay de debug por cima do topo (após tickLogoLoad)
+
+						// Segurar L+R por ~1s com o debug menu ativo grava o snapshot atual (fps,
+						// cpu, ram, vram, top consumidores) em dsimenu_perf.log. keysHeld() (não
+						// `held`/keysDownRepeat() acima, que é pra navegação com auto-repeat) --
+						// precisamos do estado contínuo de "está pressionado agora" pra contar frames.
+						static int lrHoldFrames = 0;
+						u16 keys = keysHeld();
+						if ((keys & KEY_L) && (keys & KEY_R)) {
+							if (++lrHoldFrames == 60) // ~1s a 60fps
+								tex().capturePerfLog();
+						} else {
+							lrHoldFrames = 0;
+						}
+					}
 				}
 
 				boxArtFound = ((CURPOS + PAGENUM * 40) < ((int)dirContents[scrn].size()));
@@ -3523,7 +3552,7 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 
 			if ((held & KEY_LEFT) || ((held & KEY_TOUCH) && touch.py > 171 && touch.px < 19 && ms().theme == TWLSettings::EThemeDSi)) { // Left or button arrow (DSi theme)
 				if (ms().theme == TWLSettings::EThemeDSi)
-					moveCursor3Row(-1, 0, dirContents[scrn]); // spin left one column
+					moveCursorGrid(-1, 0, dirContents[scrn]); // spin left one column
 				else
 					moveCursor(false, dirContents[scrn]);
 				dsiBinariesChecked = false;
@@ -3533,7 +3562,7 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 				infoCheckTimer = 0;
 			} else if ((held & KEY_RIGHT) || ((held & KEY_TOUCH) && touch.py > 171 && touch.px > 236 && ms().theme == TWLSettings::EThemeDSi)) { // Right or button arrow (DSi theme)
 				if (ms().theme == TWLSettings::EThemeDSi)
-					moveCursor3Row(1, 0, dirContents[scrn]); // spin right one column
+					moveCursorGrid(1, 0, dirContents[scrn]); // spin right one column
 				else
 					moveCursor(true, dirContents[scrn]);
 				dsiBinariesChecked = false;
@@ -3542,20 +3571,22 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 				dsiWareRAMLimitMsgPrepped = false;
 				infoCheckTimer = 0;
 			} else if ((held & KEY_UP) && ms().theme == TWLSettings::EThemeDSi && ms().sortMethod != 4) {
-				moveCursor3Row(0, -1, dirContents[scrn]); // select the row above (same column)
+				moveCursorGrid(0, -1, dirContents[scrn]); // select the row above (same column)
 				dsiBinariesChecked = false;
 				apChecked = false;
 				checkedDSiWareCompatibleB4DS = false;
 				dsiWareRAMLimitMsgPrepped = false;
 				infoCheckTimer = 0;
 			} else if ((held & KEY_DOWN) && ms().theme == TWLSettings::EThemeDSi && ms().sortMethod != 4) {
-				moveCursor3Row(0, 1, dirContents[scrn]); // select the row below (same column)
+				moveCursorGrid(0, 1, dirContents[scrn]); // select the row below (same column)
 				dsiBinariesChecked = false;
 				apChecked = false;
 				checkedDSiWareCompatibleB4DS = false;
 				dsiWareRAMLimitMsgPrepped = false;
 				infoCheckTimer = 0;
-			} else if ((pressed & KEY_UP) && (PAGENUM > 0 || CURPOS > 0 || !backFound) && (ms().theme != TWLSettings::EThemeSaturn && ms().theme != TWLSettings::EThemeHBL) && !dirInfoIniFound && (ms().sortMethod == 4) && (CURPOS + PAGENUM * 40 < ((int)dirContents[scrn].size()))) { // Move apps (DSi & 3DS themes)
+			} else if ((pressed & KEY_UP) && (PAGENUM > 0 || CURPOS > 0 || !backFound) && (ms().theme != TWLSettings::EThemeSaturn && ms().theme != TWLSettings::EThemeHBL) &&
+					   ms().theme != TWLSettings::EThemeDSi && // drag-to-reorder is single-row carousel logic (titleboxXspacing, moveCursor()) never adapted for the 2D grid -- see FRONTEND.md §12
+					   !dirInfoIniFound && (ms().sortMethod == 4) && (CURPOS + PAGENUM * 40 < ((int)dirContents[scrn].size()))) { // Move apps (3DS and other carousel themes)
 				bannerTextShown = false; // Redraw the title when done
 				showSTARTborder = false;
 				currentBg = 2;
@@ -3724,22 +3755,23 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 				titleboxXspacing = 58;
 				titleboxXdest[ms().secondaryDevice] = titleboxXpos[ms().secondaryDevice] = CURPOS * titleboxXspacing;
 			} else if (ms().theme == TWLSettings::EThemeDSi && (pressed & KEY_TOUCH) && touch.py < 164) { // Grid tap (DSi theme)
-				// Map the touch to a grid cell using the same layout as the renderer.
-				const int NROWS = 3;
-				const int rowCY[NROWS] = {36, 88, 140}; // row centres (must match graphics.cpp)
-				const int hitR = 28;                     // half hit-box (px) around each icon centre
+				// Map the touch to a grid cell using the exact same layout the renderer uses
+				// (GridView), so hit-testing can never drift from what's drawn.
+				const int hitR = 28; // half hit-box (px) around each icon centre
 				const int sd = ms().secondaryDevice;
-				const int selCol = CURPOS / NROWS;
+				const int rows = gridView().rows();
+				const int selCol = CURPOS / rows;
 				int hitItem = -1;
-				for (int c = std::max(selCol - ROW3_COLS_LEFT, 0); c <= selCol + ROW3_COLS_RIGHT && hitItem < 0; c++) {
-					int cx = 128 + c * ROW3_COL_SPACING - titleboxXpos[sd]; // column centre x
+				for (int c = std::max(selCol - gridView().colsLeft(), 0); c <= selCol + gridView().colsRight() && hitItem < 0; c++) {
+					int cx = gridView().columnCenterX(c, sd); // column centre x
 					if (touch.px < cx - hitR || touch.px > cx + hitR)
 						continue;
-					for (int r = 0; r < NROWS; r++) {
-						int i = c * NROWS + r;
+					for (int r = 0; r < rows; r++) {
+						int i = c * rows + r;
 						if (i > last_used_box)
 							break;
-						if (touch.py >= rowCY[r] - hitR && touch.py <= rowCY[r] + hitR) {
+						int cy = gridView().rowCenterY(r);
+						if (touch.py >= cy - hitR && touch.py <= cy + hitR) {
 							hitItem = i;
 							break;
 						}
@@ -3756,8 +3788,8 @@ std::string browseForFile(const std::vector<std::string_view> extensionList) {
 						bannerTextShown = false;
 						boxArtLoaded = false;
 						waitForNeedToPlayStopSound = 1;
-						titleboxXdest[sd] = (CURPOS / NROWS) * ROW3_COL_SPACING;
-						loadRow3WindowIcons(dirContents[scrn]);
+						gridView().scrollToColumn(CURPOS / rows, sd);
+						loadGridWindowIcons(dirContents[scrn]);
 						snd().playSelect();
 						dsiBinariesChecked = false;
 						apChecked = false;

@@ -98,9 +98,9 @@ public:
 	void drawTopTitle(std::u16string_view text); // selected game's title/details on the top screen
 	void loadGameLogo(const std::string &romName); // AGENDA o logo do jogo (barato; decode é deferido)
 	void tickLogoLoad();                           // decode deferido do logo (chamar 1x/frame no loop ocioso)
-	void drawTopDebug();                           // DEBUG: overlay (fps/polígonos/vértices/vram) no canto sup. esq. (1x/frame)
+	void drawTopDebug();                           // DEBUG: overlay (fps/cpu/ram/vram/top consumidores) no canto sup. esq. (1x/frame)
+	void capturePerfLog();                         // DEBUG: grava o snapshot atual do overlay acima em _nds/TWiLightMenu/dsimenu_perf.log (segurar L+R com o debug menu ativo)
 	void tickStatusBar();                          // recompõe o topo só quando a hora/bateria mudam (1x/frame, sem flicker)
-	void composeStatusBar(u16 *dst);               // desenha a barra de status no buffer dado (topo, por cima de tudo)
 	void redrawTop();                              // recompõe a tela superior (limpa overlay de debug residual)
 
 	void clearTopScreen();
@@ -135,7 +135,16 @@ private:
 	void loadBackgrounds();
 
 	static int getVolumeLevel();
-	static int getBatteryLevel();
+
+public:
+	static int getBatteryLevel(); // usado por BatteryComponent/StatusBarComponent além de internamente
+
+private:
+	// Junta fps/CPU/heap/VRAM/top-3 consumidores numa lista de linhas de texto pronta -- usada tanto
+	// pelo overlay em tela (drawTopDebug) quanto pela captura em arquivo (capturePerfLog), pra não
+	// duplicar a coleta/ranking das métricas entre os dois. Retorna quantas linhas preencheu.
+	static constexpr int DEBUG_LINE_COUNT = 10;
+	int gatherDebugLines(int fps, char lines[DEBUG_LINE_COUNT][32]);
 
 private:
 

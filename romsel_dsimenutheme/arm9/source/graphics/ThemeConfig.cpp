@@ -14,7 +14,10 @@ ThemeConfig::ThemeConfig()
 	_bubbleTipRenderY(80), _bubbleTipRenderX(122), _bubbleTipSpriteH(8), _bubbleTipSpriteW(11), _rotatingCubesRenderY(78),
 	_shoulderLRenderY(172), _shoulderLRenderX(0), _shoulderLTextY(257), _shoulderLTextX(18), _shoulderLTextAlign(1),
 	_shoulderRRenderY(172), _shoulderRRenderX(178), _shoulderRTextY(257), _shoulderRTextX(238), _shoulderRTextAlign(-1),
-	_volumeRenderY(4), _volumeRenderX(16), _batteryRenderY(5), _batteryRenderX(235), _usernameRenderY(3), _usernameRenderX(28),
+	_volumeRenderY(4), _volumeRenderX(16), _batteryRenderY(5), _batteryRenderX(235),
+	_statusBarContentOffsetX(0), _statusBarContentOffsetY(0),
+	_logoZoomPercent(100), _logoOffsetX(0), _logoOffsetY(0),
+	_usernameRenderY(3), _usernameRenderX(28),
 	_usernameRenderXDS(4), _usernameEdgeAlpha(true), _dateRenderY(5), _dateRenderX(162), _timeRenderY(5), _timeRenderX(200),
 	// _photoRenderY(24), _photoRenderX(179),
 	_bipsUserPalette(false), _boxUserPalette(false), _boxEmptyUserPalette(false), _boxFullUserPalette(false),
@@ -107,6 +110,11 @@ void ThemeConfig::loadConfig() {
 	_shoulderRTextAlign = getInt(themeConfig, "ShoulderRTextAlign", _shoulderRTextAlign);
 	_batteryRenderY = getInt(themeConfig, "BatteryRenderY", _batteryRenderY);
 	_batteryRenderX = getInt(themeConfig, "BatteryRenderX", _batteryRenderX);
+	_statusBarContentOffsetX = getInt(themeConfig, "StatusBarContentOffsetX", _statusBarContentOffsetX);
+	_statusBarContentOffsetY = getInt(themeConfig, "StatusBarContentOffsetY", _statusBarContentOffsetY);
+	_logoZoomPercent = getInt(themeConfig, "LogoZoomPercent", _logoZoomPercent);
+	_logoOffsetX = getInt(themeConfig, "LogoOffsetX", _logoOffsetX);
+	_logoOffsetY = getInt(themeConfig, "LogoOffsetY", _logoOffsetY);
 	_usernameRenderY = getInt(themeConfig, "UsernameRenderY", _usernameRenderY);
 	_usernameRenderX = getInt(themeConfig, "UsernameRenderX", _usernameRenderX);
 	_usernameRenderXDS = getInt(themeConfig, "UsernameRenderXDS", _usernameRenderXDS);

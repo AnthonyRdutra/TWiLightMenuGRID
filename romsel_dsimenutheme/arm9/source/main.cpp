@@ -32,6 +32,7 @@
 #include "common/my_rumble.h"
 #include "myDSiMode.h"
 #include "graphics/ThemeConfig.h"
+#include "graphics/ThemeLayout.h"
 #include "graphics/ThemeTextures.h"
 #include "graphics/themefilenames.h"
 
@@ -1026,6 +1027,7 @@ int dsiMenuTheme(void) {
 	}
 	tfn(); //
 	tc().loadConfig();
+	tl().loadConfig(); // grid layout.json, if the theme ships one -- see graphics/ThemeLayout.h
 	tex().videoSetup(); // allocate texture pointers
 
 	fontInit();

@@ -87,6 +87,11 @@ You may configure various options on how the theme is drawn in the `theme.ini`, 
 | `VolumeRenderY`          | The Y position on the top screen to draw the volume icon                                                     | 16            | 16            |
 | `BatteryRenderY`         | The Y position on the top screen to draw the battery icon                                                    | 5             | 5             |
 | `BatteryRenderX`         | The X position on the top screen to draw the battery icon                                                    | 235           | 235           |
+| `StatusBarContentOffsetX`| DSi grid theme only: shifts the battery+clock inside `status_bar.bmp` horizontally (px)                      | N/A           | 0             |
+| `StatusBarContentOffsetY`| DSi grid theme only: shifts the battery+clock inside `status_bar.bmp` vertically (px)                        | N/A           | 0             |
+| `LogoZoomPercent`        | DSi grid theme only: scales the selected game's logo (100 = normal size)                                     | N/A           | 100           |
+| `LogoOffsetX`            | DSi grid theme only: shifts the game logo from the top screen's centre, horizontally (px)                    | N/A           | 0             |
+| `LogoOffsetY`            | DSi grid theme only: shifts the game logo from the top screen's centre, vertically (px)                      | N/A           | 0             |
 | `RenderPhoto`            | Whether or not to draw a photo on the top screen                                                             | 0             | 1             |
 | `StartTextUserPalette`   | Assign the DSi Profile Theme to the palette of the start text                                                | N/A           | 1             |
 | `StartBorderUserPalette` | Assign the DSi Profile Theme Palette to the palette of the start border                                      | N/A           | 1             |
@@ -203,6 +208,11 @@ You may configure various options on how the theme is drawn in the `theme.ini`, 
 | `VolumeRenderY`          | The Y position on the top screen to draw the volume icon                                                     | 16            | 16            |
 | `BatteryRenderY`         | The Y position on the top screen to draw the battery icon                                                    | 15            | 15            |
 | `BatteryRenderX`         | The X position on the top screen to draw the battery icon                                                    | 235           | 235           |
+| `StatusBarContentOffsetX`| DSi grid theme only: shifts the battery+clock inside `status_bar.bmp` horizontally (px)                      | N/A           | 0             |
+| `StatusBarContentOffsetY`| DSi grid theme only: shifts the battery+clock inside `status_bar.bmp` vertically (px)                        | N/A           | 0             |
+| `LogoZoomPercent`        | DSi grid theme only: scales the selected game's logo (100 = normal size)                                     | N/A           | 100           |
+| `LogoOffsetX`            | DSi grid theme only: shifts the game logo from the top screen's centre, horizontally (px)                    | N/A           | 0             |
+| `LogoOffsetY`            | DSi grid theme only: shifts the game logo from the top screen's centre, vertically (px)                      | N/A           | 0             |
 | `RenderPhoto`            | Whether or not to draw a photo on the top screen                                                             | 0             | 1             |
 | `StartTextUserPalette`   | Assign the DSi Profile Theme to the palette of the start text                                                | N/A           | 1             |
 | `StartBorderUserPalette` | Assign the DSi Profile Theme Palette to the palette of the start border                                      | N/A           | 1             |

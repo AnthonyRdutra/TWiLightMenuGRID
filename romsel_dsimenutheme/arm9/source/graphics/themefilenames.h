@@ -44,6 +44,10 @@
 
 #define TFN_UI_CURRENT_DIRECTORY    TFN_UI_DIRECTORY"/"
 #define TFN_THEME_SETTINGS          TFN_UI_DIRECTORY"/theme.ini"
+// JSON counterpart to theme.ini, for grid geometry/asset overrides/sprite tables -- see
+// graphics/ThemeLayout.h. Optional: themes without this file keep ThemeLayout's hardcoded
+// defaults, which reproduce the DSi grid's pre-existing behavior exactly.
+#define TFN_THEME_LAYOUT            TFN_UI_DIRECTORY"/layout.json"
 
 #define TFN_BG_TOPBG                TFN_UI_DIRECTORY"/background/top"
 #define TFN_BG_TOPPHOTOBG           TFN_UI_DIRECTORY"/background/top_photo"

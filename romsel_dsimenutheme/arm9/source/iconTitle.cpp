@@ -160,11 +160,11 @@ void convertIconPalette(sNDSBannerExt* ndsBanner) {
 
 void drawIconScaled(int Xpos, int Ypos, int num, int scale) {
 	if (num == -1) { // Moving app icon
-		glSpriteScale(Xpos, Ypos, scale, bannerFlip[40], &getIcon(NDS_ICON_LIST_BANKS)[bnriconframenumY[40]]);
+		glSpriteScale(Xpos, Ypos, scale, bannerFlip[40], &getIcon(iconActiveBankCount())[bnriconframenumY[40]]);
 		if (bnriconPalLine[40] != bnriconPalLoaded[40])
 			bnriconPalLoaded[40] = -1;
 	} else {
-		glSpriteScale(Xpos, Ypos, scale, bannerFlip[num], &getIcon(num % NDS_ICON_LIST_BANKS)[bnriconframenumY[num]]);
+		glSpriteScale(Xpos, Ypos, scale, bannerFlip[num], &getIcon(num % iconActiveBankCount())[bnriconframenumY[num]]);
 		if (bnriconPalLine[num] != bnriconPalLoaded[num])
 			bnriconPalLoaded[num] = -1;
 	}
@@ -172,12 +172,12 @@ void drawIconScaled(int Xpos, int Ypos, int num, int scale) {
 
 void drawIcon(int Xpos, int Ypos, int num) {
 	if (num == -1) { // Moving app icon
-		glSprite(Xpos, Ypos, bannerFlip[40], &getIcon(NDS_ICON_LIST_BANKS)[bnriconframenumY[40]]);
+		glSprite(Xpos, Ypos, bannerFlip[40], &getIcon(iconActiveBankCount())[bnriconframenumY[40]]);
 		if (bnriconPalLine[40] != bnriconPalLoaded[40]) {
 			bnriconPalLoaded[40] = -1; // defer loading the palette
 		}
 	} else {
-		glSprite(Xpos, Ypos, bannerFlip[num], &getIcon(num % NDS_ICON_LIST_BANKS)[bnriconframenumY[num]]);
+		glSprite(Xpos, Ypos, bannerFlip[num], &getIcon(num % iconActiveBankCount())[bnriconframenumY[num]]);
 		if (bnriconPalLine[num] != bnriconPalLoaded[num]) {
 			bnriconPalLoaded[num] = -1; // defer loading the palette
 		}
@@ -187,7 +187,7 @@ void drawIcon(int Xpos, int Ypos, int num) {
 void loadDeferredIconPalettes() {
 	for (int i = 0; i < 41; i++) {
 		if (bnriconPalLoaded[i] == -1) {
-			glLoadPalette(i < 40 ? i % NDS_ICON_LIST_BANKS : NDS_ICON_LIST_BANKS, bnriconTile[i].dsi_palette[bnriconPalLine[i]]);
+			glLoadPalette(i < 40 ? i % iconActiveBankCount() : iconActiveBankCount(), bnriconTile[i].dsi_palette[bnriconPalLine[i]]);
 			bnriconPalLoaded[i] = bnriconPalLine[i];
 		}
 	}
@@ -705,7 +705,7 @@ void getGameInfo(bool isDir, const char *name, int num, bool fromArgv) {
 void iconUpdate(bool isDir, const char *name, int num) {
 	logPrint("iconUpdate: ");
 
-	int spriteIdx = num == -1 ? NDS_ICON_LIST_BANKS : num % NDS_ICON_LIST_BANKS;
+	int spriteIdx = num == -1 ? iconActiveBankCount() : num % iconActiveBankCount();
 	if (num == -1)
 		num = 40;
 

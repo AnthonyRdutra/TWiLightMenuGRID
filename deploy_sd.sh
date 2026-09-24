@@ -3,7 +3,14 @@
 # deploy_sd.sh -- installs the build onto a real DSi SD card (developer tool):
 #   1. Replaces  <SD>/_nds/TWiLightMenu/dsimenu.srldr  with dist/dsimenu.srldr
 #      (backing up the previous one as dsimenu.srldr.bak).
-#   2. Updates the card's theme folder from our preview one
+#   2. Refreshes the "Default grid theme" folder in the .preview/sdcard checkout from its
+#      canonical source (Injector/Default grid theme) -- this is the theme carrying our
+#      component-based rendering standard (layout.json for GridView, grf/status_bar.bmp +
+#      topscreen_titlebox.bmp/topscreen_startbox.bmp for the top-screen HUD components, the
+#      flat battery/ PNG set, etc.). .preview/sdcard is only ever a build/test checkout, not
+#      where theme assets are actually edited, so without this step edits made under
+#      Injector/ silently never reach either melonDS or a real SD (see FRONTEND.md).
+#   3. Updates the card's whole theme folder from our (now-refreshed) preview one
 #      (.preview/sdcard/_nds/TWiLightMenu/dsimenu/themes).
 #
 # This is a developer convenience script: it expects a local build (dist/dsimenu.srldr,
@@ -19,6 +26,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRLDR="$ROOT/dist/dsimenu.srldr"
 THEMES_SRC="$ROOT/.preview/sdcard/_nds/TWiLightMenu/dsimenu/themes"
+GRID_THEME_NAME="Default grid theme"
+GRID_THEME_CANONICAL="$ROOT/Injector/$GRID_THEME_NAME"
 
 # ---- locate the SD ----
 SD="${1:-}"
@@ -53,6 +62,28 @@ if [ ! -d "$THEMES_SRC" ]; then
 	exit 1
 fi
 
+# FAT-friendly rsync (no perms/owner, tolerate a 1s FAT timestamp granularity), falling back to a
+# plain recursive copy when rsync isn't available.
+sync_dir() {
+	local src="$1" dst="$2"
+	mkdir -p "$dst"
+	if command -v rsync >/dev/null 2>&1; then
+		rsync -rt --modify-window=1 --no-perms --no-owner --no-group \
+			--exclude='.DS_Store' --exclude='._*' \
+			"$src/" "$dst/"
+	else
+		cp -R "$src/." "$dst/"
+	fi
+}
+
+# ---- 0) refresh the grid theme from its canonical source (Injector/) into the preview checkout ----
+if [ -d "$GRID_THEME_CANONICAL" ]; then
+	echo ">> Refreshing '$GRID_THEME_NAME' from Injector/ (our new component/layout.json standard)"
+	sync_dir "$GRID_THEME_CANONICAL" "$THEMES_SRC/$GRID_THEME_NAME"
+else
+	echo "!! Canonical theme not found, skipping refresh: $GRID_THEME_CANONICAL" >&2
+fi
+
 # ---- 1) dsimenu.srldr ----
 DST_SRLDR="$SD/_nds/TWiLightMenu/dsimenu.srldr"
 if [ -f "$DST_SRLDR" ]; then
@@ -64,16 +95,8 @@ echo ">> Copied dsimenu.srldr ($(du -h "$SRLDR" | cut -f1))"
 
 # ---- 2) themes folder ----
 DST_THEMES="$SD/_nds/TWiLightMenu/dsimenu/themes"
-mkdir -p "$DST_THEMES"
 echo ">> Updating themes -> $DST_THEMES"
-if command -v rsync >/dev/null 2>&1; then
-	# FAT-friendly flags: no perms/owner, tolerate a 1s timestamp difference.
-	rsync -rt --modify-window=1 --no-perms --no-owner --no-group \
-		--exclude='.DS_Store' --exclude='._*' \
-		"$THEMES_SRC/" "$DST_THEMES/"
-else
-	cp -R "$THEMES_SRC/." "$DST_THEMES/"
-fi
+sync_dir "$THEMES_SRC" "$DST_THEMES"
 
 # ---- flush ----
 sync

@@ -1,0 +1,10 @@
+{
+  "grid": {
+    "colSpacing": 48,
+    "rowSpacing": 52,
+    "rowOffsetY": 36,
+    "activeScale": 4096,
+    "inactiveScale": 2048,
+    "zoomStep": 585
+  }
+}

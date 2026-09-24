@@ -44,7 +44,6 @@
 #include "fontHandler.h"
 #include "graphics/ThemeTextures.h"
 #include "common/lodepng.h"
-#include "launchDots.h"
 #include "queueControl.h"
 #include "sound.h"
 #include "startborderpal.h"
@@ -54,6 +53,9 @@
 #include "themefilenames.h"
 #include "common/ColorLut.h"
 #include "tool/colortool.h"
+#include "graphics/components/GridCursorComponent.h"
+#include "graphics/components/GridView.h"
+#include "graphics/components/LaunchWipeComponent.h"
 
 #include "bubbles.h"	// For HBL theme
 
@@ -122,8 +124,6 @@ extern bool showColon;
 
 int movetimer = 0;
 
-int titleboxYmovepos = 0;
-
 extern int spawnedtitleboxes;
 
 std::vector<std::string> photoList;
@@ -140,14 +140,8 @@ int titlewindowXdest[2] = {0};
 int titleboxXspeed = 3; // higher is SLOWER
 int titleboxXspacing = 58;
 
-// 3-row carousel selection zoom animation (DSi theme). On item change the newly-selected
-// item grows (zoom-in) and the previously-selected one shrinks (zoom-out) over a few frames
-// instead of snapping. Endpoints stay exactly at the integer scales (1.0 / 0.5) so the
-// resting art stays pixel-perfect; only the transition uses fractional scale.
-static int gridSelCur = -1;    // item que está crescendo (seleção atual)
-static int gridSelPrev = -1;   // item que está encolhendo (seleção anterior)
-static int gridZoomFP = 4096;  // progresso 0..4096 do zoom da seleção atual (4096 = cheio)
-#define GRID_ZOOM_STEP 585     // passo LINEAR do zoom (~7 frames de 0 a 4096; sem front-load)
+// The DSi theme's icon grid (selection zoom, scroll, draw) now lives entirely in GridView
+// (graphics/components/GridView.h) — see gridView().
 
 bool reloadDate = false;
 bool reloadTime = false;
@@ -408,7 +402,19 @@ void playRotatingCubesVideo(void) {
 	rocketVideo_loadFrame = false;
 }
 
+// Render-cost measurement (vblankWorkPercent(), declared in graphics.h): hardware timers 2+3
+// cascaded via cpuStartTiming(2)/cpuEndTiming() (libnds, nds/timers.h) time-box this function's own
+// body every frame. Neither channel is used anywhere else in this codebase. ~16713us is the NDS/DSi
+// vblank period (1000000/59.8261 Hz, GBATEK) -- the frame budget the percentage is relative to.
+// Gated behind the debug menu itself (debugTiming below) -- reconfiguring hardware timers from
+// inside an IRQ handler isn't free, and there's no reason to pay for it when nobody's looking.
+#define VBLANK_PERIOD_US 16713
+static int _vblankWorkPercent = 0;
+int vblankWorkPercent() { return _vblankWorkPercent; }
+
 void vBlankHandler() {
+	const bool debugTiming = ms().theme == TWLSettings::EThemeDSi && ms().dsiDebugMenu;
+	if (debugTiming) cpuStartTiming(2); // stopped+read at the bottom of this function
 	execQueue();		   // Execute any actions queued during last vblank.
 	execDeferredIconUpdates(); // Update any icons queued during last vblank.
 	loadDeferredIconPalettes();
@@ -482,19 +488,8 @@ void vBlankHandler() {
 
 	// 3-row carousel selection zoom: grow the new item, shrink the previous one.
 	if (ms().theme == TWLSettings::EThemeDSi) {
-		if (gridSelCur != CURPOS) {
-			gridSelPrev = gridSelCur; // o antigo começa a encolher
-			gridSelCur = CURPOS;      // o novo começa a crescer
-			gridZoomFP = 0;
-		}
-		if (gridZoomFP < 4096) {
-			// Crescimento LINEAR (passo constante). O ease-out anterior era front-loaded (saltava
-			// ~metade no 1º frame), causando um "solavanco" vertical no instante da seleção
-			// (a borda de cima do box da 1ª linha pulava pro topo). Linear = zoom suave, sem salto.
-			gridZoomFP += GRID_ZOOM_STEP;
-			if (gridZoomFP > 4096) gridZoomFP = 4096;
-			updateFrame = true; // mantém o render rodando durante a animação
-		}
+		updateFrame |= gridView().update();
+		updateFrame |= gridCursor().update();
 	}
 
 	// Move title box/window closer to destination if moved
@@ -719,10 +714,11 @@ void vBlankHandler() {
 		updateFrame = true;
 	}
 
-	if (applaunchprep && titleboxYmovepos < 192) {
-		titleboxYmovepos += 5;
-		updateFrame = true;
-	}
+	// Launch wipe: dark circle expanding to cover both screens (see LaunchWipeComponent). The top
+	// screen has no gl2d layer, so it's painted here directly rather than inside the
+	// glBegin2D()/glEnd2D() block below where the bottom-screen half is drawn.
+	updateFrame |= launchWipe().update();
+	launchWipe().drawTopScreen();
 
 	if (ms().theme == TWLSettings::EThemeHBL) {
 		// Back bubbles
@@ -926,58 +922,8 @@ void vBlankHandler() {
 				// up/down pick the row. Each item uses the theme's own assets: the icon box
 				// (box.bmp -> boxfullImage, folder.bmp -> folderImage for directories) as the
 				// frame/background, with the game icon drawn on top. The selected item is zoomed.
-				const int NROWS = 3;
-				// Integer scaling at rest: box art is 64x64, icon 32x32. Active = scale 1.0
-				// (box 64 / icon 32, native 1:1), inactive = scale 0.5 (box 32 / icon 16, exact 2:1).
-				// During a selection change the scale animates between these (fractional, brief).
-				const s32 ACTIVE_SCALE = 4096;            // 1.0 -> box 64px / icon 32px
-				const s32 INACTIVE_SCALE = 2048;          // 0.5 -> box 32px / icon 16px
-				const int colSpacing = 48;
-				const int rowCY[NROWS] = {36, 88, 140};   // 52px row pitch, shifted 8px up
-				const int sd = ms().secondaryDevice;
-				const int selCol = CURPOS / NROWS;
-				// Draw up to 8 columns (4 left + selected + 3 right) so items enter/leave smoothly.
-				for (int c = std::max(selCol - 4, 0); c <= selCol + 3; c++) {
-					int cx = 128 + c * colSpacing - titleboxXpos[sd]; // column centre x
-					for (int r = 0; r < NROWS; r++) {
-						int i = c * NROWS + r;
-						if (i >= spawnedtitleboxes)
-							continue;
-						// Animated scale: current selection grows INACTIVE->ACTIVE, the
-						// previous one shrinks ACTIVE->INACTIVE; everything else stays inactive.
-						s32 boxScale;
-						if (i == gridSelCur)
-							boxScale = INACTIVE_SCALE + ((ACTIVE_SCALE - INACTIVE_SCALE) * gridZoomFP >> 12);
-						else if (i == gridSelPrev)
-							boxScale = ACTIVE_SCALE - ((ACTIVE_SCALE - INACTIVE_SCALE) * gridZoomFP >> 12);
-						else
-							boxScale = INACTIVE_SCALE;
-						int boxPx = (boxScale * 64) >> 12; // px do box p/ centralizar (art 64x64)
-						int bx = cx - boxPx / 2;
-						int by = rowCY[r] - boxPx / 2;
-						// Frame/background from the theme: folder for directories, icon box otherwise.
-						if (isDirectory[i]) {
-							glSpriteScale(bx, by, boxScale, GL_FLIP_NONE, &tex().folderImage()[0]);
-							if (!customIcon[i])
-								continue; // folder art already shows the folder; no game icon
-						} else {
-							glSpriteScale(bx, by, boxScale, GL_FLIP_NONE, &tex().boxfullImage()[0]);
-						}
-						// Game icon (32px art) on top of the box; its on-screen size is half the
-						// box, so its scale tracks boxScale directly. During the fractional zoom,
-						// glSpriteScale truncates the destination and drops the sprite's outer texel
-						// (a missing 1px border that only fills in once the zoom settles at 1.0), so
-						// bias the scale up by ~1 texel (128 = one 32px texel) to ceil the size and
-						// keep the edge covered throughout; clamp to native 1:1.
-						s32 iconScale = boxScale + 127;
-						if (iconScale > ACTIVE_SCALE) iconScale = ACTIVE_SCALE;
-						int iconPx = (32 * iconScale) >> 12;
-						drawIconScaled(cx - iconPx / 2, rowCY[r] - iconPx / 2, i, iconScale);
-					}
-				}
-				// Menu bar on top of the items (drawn last = upper layer).
-				menuBarDraw();
-				glColor(RGB15(31, 31, 31));
+				// See graphics/components/GridView.h for the geometry/animation/draw code.
+				gridView().draw();
 			} else {
 			int spawnedboxXpos = 96;
 			int iconXpos = 112;
@@ -1162,23 +1108,10 @@ void vBlankHandler() {
 			// 	glSprite(256 - 44, 0, GL_FLIP_NONE, &tex().cornerButtonImage()[1]);
 		}
 
-		if (applaunchprep) {
-			if (isDirectory[CURPOS]) {
-				glSprite(96, 87 - titleboxYmovepos, GL_FLIP_NONE, tex().folderImage());
-				if (customIcon[CURPOS])
-					drawIcon(112, 96 - titleboxYmovepos, CURPOS);
-			} else {
-				if (!bnrSysSettings[CURPOS]) {
-					glSprite(96, 84 - titleboxYmovepos, GL_FLIP_NONE, tex().boxfullImage());
-				}
-				if (bnrSysSettings[CURPOS])
-					glSprite(96, 83 - titleboxYmovepos, GL_FLIP_NONE, &tex().settingsImage()[1]);
-				else
-					drawIcon(112, 96 - titleboxYmovepos, CURPOS);
-			}
-			// Draw dots after selecting a game/app
-			dots().drawAuto();
-		}
+		// Launch wipe: dark circle expanding from centre, covering the bottom screen's half (the
+		// top screen's half is painted earlier in this function, outside glBegin2D/glEnd2D --
+		// see LaunchWipeComponent). Replaces the old "icon floats up off the screen" effect.
+		launchWipe().draw();
 		if (showSTARTborder && displayGameIcons && (ms().theme < 4) && ms().theme != TWLSettings::EThemeDSi) { // fork: no START border
 			glSprite(96, tc().startBorderRenderY(), GL_FLIP_NONE,
 				 &tex().startbrdImage()[startBorderZoomAnimSeq[startBorderZoomAnimNum] &
@@ -1354,6 +1287,9 @@ void vBlankHandler() {
 	}
 
 	bottomBgRefresh(); // Refresh the background image on vblank
+
+	if (debugTiming)
+		_vblankWorkPercent = (int)(timerTicks2usec(cpuEndTiming()) * 100 / VBLANK_PERIOD_US);
 }
 
 static bool currentPhotoIsBootstrap = false;
@@ -1747,6 +1683,14 @@ void graphicsInit() {
 	titleboxXdest[1] = ms().cursorPosition[1] * titleboxXspacing;
 	titlewindowXpos[1] = ms().cursorPosition[1] * 5;
 	titlewindowXdest[1] = ms().cursorPosition[1] * 5;
+
+	// The above is the single-row carousel's own scroll init (still needed for the other
+	// themes) -- the grid never reads titleboxXpos, so it needs its own startup position too.
+	// Without this, the grid would render at whatever column titleboxXpos's carousel-per-item
+	// formula happens to produce from the persisted cursor position (correct only when that
+	// position is 0), until the next left/right move silently "fixed" it with a jarring snap.
+	gridView().jumpToItem(ms().cursorPosition[0], 0);
+	gridView().jumpToItem(ms().cursorPosition[1], 1);
 
 	SetBrightness(0, (ms().theme == TWLSettings::EThemeSaturn || ms().theme == TWLSettings::EThemeHBL) ? -31 : 31);
 	SetBrightness(1, (ms().theme == TWLSettings::EThemeSaturn || ms().theme == TWLSettings::EThemeHBL) && !ms().macroMode ? -31 : 31);

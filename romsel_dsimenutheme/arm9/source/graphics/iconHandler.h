@@ -2,17 +2,31 @@
 
 #pragma once
 
-// Banks 0..(NDS_ICON_LIST_BANKS-1) hold on-screen icons (index % NDS_ICON_LIST_BANKS); the last
-// bank is the "moving app" icon. Must cover the max icons shown at once. Each bank is a 32x256
-// 4bpp texture (~4KB) in VRAM_A (128KB, shared with theme textures).
-// 8 columns x 3 rows = 24 on-screen icons.
-#define NDS_ICON_LIST_BANKS 24
-#define NDS_ICON_BANK_COUNT (NDS_ICON_LIST_BANKS + 1)
+// Banks 0..(iconActiveBankCount()-1) hold on-screen icons (index % iconActiveBankCount()); the
+// bank at iconActiveBankCount() itself is the "moving app" icon. Each bank is a 32x256 4bpp
+// texture (~4KB) in VRAM_A (128KB, shared with theme textures).
+//
+// The on-screen bank count used to be a fixed 8 columns x 3 rows = 24 -- it's now
+// iconActiveBankCount(), sized from the DSi theme's grid geometry (rows * visible columns, see
+// graphics/ThemeLayout.h) so a theme's layout.json can grow/shrink the grid. NDS_ICON_MAX_BANKS
+// is only a compile-time ceiling for the static arrays below and for clamping
+// iconActiveBankCount() to the VRAM budget -- it is NOT how many banks actually get VRAM
+// allocated (that number is always iconActiveBankCount(), computed once ThemeLayout has loaded).
+#define NDS_ICON_MAX_BANKS 25
+#define NDS_ICON_BANK_CAPACITY (NDS_ICON_MAX_BANKS + 1)
 #define TWL_ICON_FRAMES 8
 #define TWL_TEX_HEIGHT 256
 
-// Checks if the icon is a bad index
-#define BAD_ICON_IDX(i) (i < 0 || i > (NDS_ICON_BANK_COUNT - 1))
+/**
+ * Number of on-screen icon banks in use this run: gridRows() * (colsLeft+1+colsRight) from
+ * ThemeLayout, clamped to NDS_ICON_MAX_BANKS so a theme can never request more banks than the
+ * VRAM budget allows (clamping is logged, never a crash). Computed once and cached -- ThemeLayout
+ * must already be loaded (main.cpp calls tl().loadConfig() before iconManagerInit()).
+ */
+int iconActiveBankCount();
+
+// Checks if the icon is a bad index (out of the *active* pool -- see iconActiveBankCount()).
+#define BAD_ICON_IDX(i) (i < 0 || i > iconActiveBankCount())
 
 /**
  * Gets the current icon stored at the specified index.

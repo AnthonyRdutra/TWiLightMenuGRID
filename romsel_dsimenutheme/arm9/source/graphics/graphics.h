@@ -35,6 +35,13 @@ void clearBoxArt();
 void graphicsInit();
 extern u16* colorTable;
 
+// % of the ~16.7ms frame budget vBlankHandler's own body took to run, measured last frame (see
+// graphics.cpp). Used by ThemeTextures::drawTopDebug()'s "render CPU cost" readout -- this is
+// specifically the rendering work's share of the frame, not a whole-system CPU utilization
+// (swiWaitForVBlank() is called from dozens of places outside vBlankHandler, so there's no single
+// clean point to measure the latter without a much more invasive refactor).
+int vblankWorkPercent();
+
 template<typename T> inline const T abs(T const & x)
 {
 	return ( x < 0) ? -x : x;

@@ -1,4 +1,5 @@
 #include "iconHandler.h"
+#include "ThemeLayout.h"
 #include "ThemeTextures.h"
 #include "common/twlmenusettings.h"
 #include "common/logging.h"
@@ -10,10 +11,26 @@
 
 bool initialized;
 
-static int _iconTexID[NDS_ICON_BANK_COUNT];
-static u16 _paletteCache[NDS_ICON_BANK_COUNT][16];
+static int _iconTexID[NDS_ICON_BANK_CAPACITY];
+static u16 _paletteCache[NDS_ICON_BANK_CAPACITY][16];
 
-glImage _ndsIcon[NDS_ICON_BANK_COUNT][TWL_ICON_FRAMES];
+glImage _ndsIcon[NDS_ICON_BANK_CAPACITY][TWL_ICON_FRAMES];
+
+int iconActiveBankCount() {
+	static int cached = -1;
+	if (cached < 0) {
+		int count = tl().gridRows() * (tl().gridColsLeft() + 1 + tl().gridColsRight());
+		if (count < 1)
+			count = 1;
+		if (count > NDS_ICON_MAX_BANKS) {
+			logPrint("iconActiveBankCount: theme grid wants %d banks, clamping to %d (VRAM budget)\n",
+				 count, NDS_ICON_MAX_BANKS);
+			count = NDS_ICON_MAX_BANKS;
+		}
+		cached = count;
+	}
+	return cached;
+}
 
 static u8 clearTiles[(32 * 256) / 2] = {0};
 static u16 blackPalette[16 * 8] = {0};
@@ -161,7 +178,7 @@ void glReloadIconPalette(int num) {
  * they have been corrupted.
  */
 void reloadIconPalettes() {
-	for (int i = 0; i < NDS_ICON_BANK_COUNT; i++) {
+	for (int i = 0; i < iconActiveBankCount() + 1; i++) {
 		glReloadIconPalette(i);
 	}
 }
@@ -196,11 +213,15 @@ void iconManagerInit() {
 
 	tex().loadIconUnknownTexture();
 
-	// Allocate texture memory for 6 textures.
-	glGenTextures(NDS_ICON_BANK_COUNT, _iconTexID);
+	// Allocate texture memory for the on-screen banks + the "moving app" slot. This is the
+	// runtime-active count (theme grid geometry, clamped to the VRAM budget), NOT the compile-time
+	// NDS_ICON_BANK_CAPACITY ceiling -- the static arrays are over-provisioned in RAM (cheap) so
+	// any theme's grid config fits, but VRAM itself is only ever allocated for what's in use.
+	const int activeCount = iconActiveBankCount() + 1;
+	glGenTextures(activeCount, _iconTexID);
 
-	// Initialize empty data for the 6 textures.
-	for (int i = 0; i < NDS_ICON_BANK_COUNT; i++) {
+	// Initialize empty data for the active textures.
+	for (int i = 0; i < activeCount; i++) {
 		// Todo: Check if this is too much VRAM for NDS icons.
 		glLoadIcon(i, tex().iconUnknownTexture()->palette(), tex().iconUnknownTexture()->bytes(),
 			   TWL_TEX_HEIGHT, true);
