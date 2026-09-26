@@ -453,3 +453,56 @@ dele, o release pula direto pra coluna 0 ou pra última coluna (`last_used_box /
 `nearestColumn()` -- mesma convenção de sinal do `dragScrollBy` (swipe rápido pra direita = conteúdo
 segue o dedo = pousa na coluna 0; pra esquerda = última coluna). Sem essa checagem um "puxão" forte
 não tinha como alcançar as pontas do grid num gesto só.
+
+## 19. `theme.json`: fusão de `theme.ini` + `layout.json`
+
+`theme.ini` (`ThemeConfig`, seções INI `[THEME]`/`[MACRO]`, ~90 chaves) e `layout.json`
+(`ThemeLayout`, ver §12) sempre foram dois arquivos separados descrevendo o mesmo tema -- um em
+INI, outro em JSON, ambos opcionais/fail-open, ambos lidos uma vez no boot (`main.cpp`:
+`tc().loadConfig(); tl().loadConfig();`). `<pasta-do-tema>/theme.json` funde os dois num arquivo só:
+mesma raiz JSON carrega `"theme"`/`"macro"` (contraparte de `[THEME]`/`[MACRO]`) *ao lado* de
+`"grid"`/`"assets"`/`"sprites"` (o que `layout.json` já tinha). Quando `theme.json` existe, ele
+**substitui os dois arquivos por completo** -- não é mesclado chave-a-chave com `theme.ini`/
+`layout.json` eventualmente presentes na mesma pasta, que nesse caso são simplesmente ignorados.
+Um tema que não ship `theme.json` continua lendo os dois arquivos separados exatamente como antes;
+nada muda pra nenhum tema já existente.
+
+**Onde mora**: `graphics/jsonwalk.h` (novo) concentra os helpers de token-walk do `jsmn` que antes
+viviam só dentro de `ThemeLayout.cpp` (`jsoneq`/`jsmnTokenSpan`/`jsonString`/etc., agora `inline`
+pra serem incluídos também por `ThemeConfig.cpp` sem violar ODR) e acrescenta `findJsonKey` (busca
+uma chave como filha direta de um objeto, por índice de token). `ThemeLayout::loadConfig()` virou
+um wrapper de duas linhas sobre `loadFromFile(path)` (mesmo corpo de antes, só que parametrizado no
+caminho): tenta `TFN_THEME_JSON` primeiro, cai pra `TFN_THEME_LAYOUT` se não existir -- a leitura de
+`"grid"/"assets"/"sprites"` não muda nada, ela já ignorava qualquer chave de primeiro nível que não
+reconhecesse (que é exatamente o que `"theme"/"macro"` são, do ponto de vista dela).
+`ThemeConfig::loadConfig()` ganhou `loadFromJson()` na frente (mesma ideia: tenta `theme.json`,
+`return` se leu; senão cai pro `CIniFile` de sempre) -- as ~90 chaves são lidas uma-a-uma por
+`getJsonInt()`, espelhando `getInt()` linha por linha (mesma ordem, mesmo default, mesma semântica
+de "MACRO sobrescreve THEME sobrescreve hardcoded" quando `ms().macroMode`), só trocando
+`CIniFile::GetInt` por uma busca de token JSON.
+
+**Convenção de chaves**: `theme.json` usa camelCase em toda parte (`startBorderRenderY`, não
+`StartBorderRenderY`) -- mesma convenção que `layout.json` já usava pro `"grid"`, agora estendida
+pro que era `[THEME]`/`[MACRO]`. Cores (BGR555) podem ser um número decimal comum OU uma string
+`"0x..."` (`"fontPalette2": "0xDEF7"` é o formato recomendado, mais legível -- literais hex nus tipo
+`0xDEF7` não são JSON válido, então a forma com aspas é a única que preserva a notação hex do
+`theme.ini` original); `getJsonInt()`/`jsonInt()` (`jsonwalk.h`) tratam os dois exatamente como
+`CIniFile::GetInt` trata `"0x..."` vs decimal em `theme.ini`. A pegadinha de compatibilidade
+`MacroTitleboxTextY`/`MacroTitleboxTextW` (chave lida de dentro do próprio objeto `"theme"`, não
+`"macro"` -- um mecanismo de override mais antigo que o suporte genérico a `[MACRO]`/`"macro"`,
+mantido só por retrocompatibilidade com temas que ainda usam essa convenção) foi preservada como
+`macroTitleboxTextY`/`macroTitleboxTextW`.
+
+**Limite de tamanho**: `LAYOUT_JSON_MAX_BYTES`/`_TOKENS` (`ThemeLayout.cpp`) e
+`THEME_JSON_MAX_BYTES`/`_TOKENS` (`ThemeConfig.cpp`) subiram de 4096B/160 tokens pra 8192B/320
+tokens -- `theme.json` carrega bem mais chaves que `layout.json` sozinho costumava ter. Acima disso
+é tratado como "ausente" (mantém defaults), nunca trava.
+
+**Exemplo real**: `Injector-c/themes-example/Default grid theme/` (tema-exemplo empacotado com o
+Injector, §ver `Injector-c/FRONTEND`-equivalente) trocou seu `theme.ini`+`layout.json` por um
+`theme.json` único, convertendo as ~20 chaves que esse tema de fato sobrescrevia (a maioria das ~90
+chaves do `ThemeConfig` fica no default herdado do construtor, tema nenhum precisa listar todas).
+`Injector-c/src/theme_scan.c` (o scanner de temas embutidos do Injector) passou a reconhecer
+`theme.json` como marcador válido de "isto é uma pasta de tema", junto com o `theme.ini` que já
+reconhecia -- sem isso, esse tema-exemplo pararia de aparecer na lista de temas instaláveis do
+Injector assim que perdesse seu `theme.ini`.

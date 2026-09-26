@@ -3,9 +3,18 @@
 #include "themefilenames.h"
 #include "common/twlmenusettings.h"
 #include "common/singleton.h"
+#include "jsonwalk.h"
 
 #include <nds.h>
 #include <string>
+#include <cstdio>
+
+// Generous but bounded, same reasoning as ThemeLayout.cpp's LAYOUT_JSON_MAX_BYTES/TOKENS (which
+// this mirrors): theme.json is a small, hand-written config file, not user data. Sized for ALL of
+// theme.ini's ~90 keys plus a macro override section, comfortably -- anything bigger or with more
+// tokens than fit is treated the same as "absent" (fall back to theme.ini), never crash.
+static constexpr size_t THEME_JSON_MAX_BYTES = 8192;
+static constexpr int THEME_JSON_MAX_TOKENS = 320;
 
 // Magic numbers derived from default dark theme
 ThemeConfig::ThemeConfig()
@@ -66,8 +75,209 @@ int ThemeConfig::getInt(CIniFile &ini, const std::string &item, int defaultVal) 
 	return ini.GetInt("THEME", item, defaultVal);
 }
 
+int ThemeConfig::getJsonInt(const char *json, const jsmntok_t *tokens, int n, int themeIdx,
+                             int macroIdx, const char *item, int defaultVal) {
+	int themeVal = defaultVal;
+	int idx = findJsonKey(json, tokens, n, themeIdx, item);
+	if (idx >= 0) themeVal = jsonInt(json, tokens[idx], defaultVal);
+
+	if (ms().macroMode && macroIdx >= 0) {
+		int midx = findJsonKey(json, tokens, n, macroIdx, item);
+		if (midx >= 0) return jsonInt(json, tokens[midx], themeVal);
+	}
+	return themeVal;
+}
+
+// theme.json counterpart to loadConfig()'s CIniFile-based reading below -- same ~90 keys, same
+// per-key defaults, same macro-mode override semantics (getJsonInt() mirrors getInt() exactly),
+// just camelCase keys under theme.json's "theme"/"macro" objects instead of PascalCase keys under
+// theme.ini's [THEME]/[MACRO] sections (matching the camelCase convention layout.json's own
+// "grid"/"assets"/"sprites" objects already used). Kept as one big flat function on purpose,
+// mirroring loadConfig()'s own shape below line for line, rather than introducing a key/pointer
+// table -- easier to eyeball against loadConfig() for "did I translate every key" than a lookup
+// table would be, and this only ever runs once at startup.
+bool ThemeConfig::loadFromJson() {
+	std::string path = TFN_THEME_JSON;
+
+	FILE *f = fopen(path.c_str(), "rb");
+	if (!f)
+		return false; // no theme.json shipped by this theme -- caller falls back to theme.ini
+
+	fseek(f, 0, SEEK_END);
+	long fileSize = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (fileSize <= 0 || (size_t)fileSize > THEME_JSON_MAX_BYTES) {
+		fclose(f); // empty, unreadable, or bigger than our fixed buffer -- treat as absent
+		return false;
+	}
+
+	static char buf[THEME_JSON_MAX_BYTES + 1];
+	size_t readCount = fread(buf, 1, (size_t)fileSize, f);
+	fclose(f);
+	if (readCount != (size_t)fileSize)
+		return false;
+	buf[readCount] = '\0';
+
+	static jsmntok_t tokens[THEME_JSON_MAX_TOKENS];
+	jsmn_parser parser;
+	jsmn_init(&parser);
+	int n = jsmn_parse(&parser, buf, readCount, tokens, THEME_JSON_MAX_TOKENS);
+	if (n < 1 || tokens[0].type != JSMN_OBJECT)
+		return false; // malformed / truncated / not an object at the root
+
+	int themeIdx = findJsonKey(buf, tokens, n, 0, "theme");
+	int macroIdx = findJsonKey(buf, tokens, n, 0, "macro"); // may be -1: optional, same as [MACRO]
+	if (themeIdx < 0)
+		return false; // no "theme" object at all -- nothing here to read, same as no file
+
+	int macroY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "macroTitleboxTextY", -1);
+	int macroW = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "macroTitleboxTextW", -1);
+
+	_startBorderRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "startBorderRenderY", _startBorderRenderY);
+	_startBorderSpriteW = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "startBorderSpriteW", _startBorderSpriteW);
+	_startBorderSpriteH = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "startBorderSpriteH", _startBorderSpriteH);
+	_startTextRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "startTextRenderY", _startTextRenderY);
+
+	_bubbleTipRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "bubbleTipRenderY", _bubbleTipRenderY);
+	_bubbleTipRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "bubbleTipRenderX", _bubbleTipRenderX);
+	_bubbleTipSpriteW = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "bubbleTipSpriteW", _bubbleTipSpriteW);
+	_bubbleTipSpriteH = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "bubbleTipSpriteH", _bubbleTipSpriteH);
+
+	_titleboxRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "titleboxRenderY", _titleboxRenderY);
+	_titleboxMaxLines = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "titleboxMaxLines", _titleboxMaxLines);
+	_titleboxTextY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "titleboxTextY", _titleboxTextY);
+	_titleboxTextW = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "titleboxTextW", _titleboxTextW);
+	if (ms().macroMode) {
+		if (macroY != -1) _titleboxTextY = macroY;
+		if (macroW != -1) _titleboxTextW = macroW;
+	}
+	_titleboxTextLarge = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "titleboxTextLarge", _titleboxTextLarge);
+
+	_volumeRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "volumeRenderX", _volumeRenderX);
+	_volumeRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "volumeRenderY", _volumeRenderY);
+	_shoulderLRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderLRenderY", _shoulderLRenderY);
+	_shoulderLRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderLRenderX", _shoulderLRenderX);
+	_shoulderLTextY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderLTextY", _shoulderLTextY);
+	_shoulderLTextX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderLTextX", _shoulderLTextX);
+	_shoulderLTextAlign = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderLTextAlign", _shoulderLTextAlign);
+	_shoulderRRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderRRenderY", _shoulderRRenderY);
+	_shoulderRRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderRRenderX", _shoulderRRenderX);
+	_shoulderRTextY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderRTextY", _shoulderRTextY);
+	_shoulderRTextX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderRTextX", _shoulderRTextX);
+	_shoulderRTextAlign = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "shoulderRTextAlign", _shoulderRTextAlign);
+	_batteryRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "batteryRenderY", _batteryRenderY);
+	_batteryRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "batteryRenderX", _batteryRenderX);
+	_statusBarContentOffsetX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "statusBarContentOffsetX", _statusBarContentOffsetX);
+	_statusBarContentOffsetY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "statusBarContentOffsetY", _statusBarContentOffsetY);
+	_logoZoomPercent = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "logoZoomPercent", _logoZoomPercent);
+	_logoOffsetX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "logoOffsetX", _logoOffsetX);
+	_logoOffsetY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "logoOffsetY", _logoOffsetY);
+	_usernameRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "usernameRenderY", _usernameRenderY);
+	_usernameRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "usernameRenderX", _usernameRenderX);
+	_usernameRenderXDS = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "usernameRenderXDS", _usernameRenderXDS);
+	_dateRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "dateRenderY", _dateRenderY);
+	_dateRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "dateRenderX", _dateRenderX);
+	_timeRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "timeRenderY", _timeRenderY);
+	_timeRenderX = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "timeRenderX", _timeRenderX);
+
+	_bipsUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "bipsUserPalette", _bipsUserPalette);
+	_boxUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "boxUserPalette", _boxUserPalette);
+	_boxEmptyUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "boxEmptyUserPalette", _boxEmptyUserPalette);
+	_boxFullUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "boxFullUserPalette", _boxFullUserPalette);
+	_braceUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "braceUserPalette", _braceUserPalette);
+	_bubbleUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "bubbleUserPalette", _bubbleUserPalette);
+	_buttonArrowUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "buttonArrowUserPalette", _buttonArrowUserPalette);
+	_cornerButtonUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "cornerButtonUserPalette", _cornerButtonUserPalette);
+	_cursorUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "cursorUserPalette", _cursorUserPalette);
+	_dialogBoxUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "dialogBoxUserPalette", _dialogBoxUserPalette);
+	_folderUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "folderUserPalette", _folderUserPalette);
+	_launchDotsUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "launchDotsUserPalette", _launchDotsUserPalette);
+	_movingArrowUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "movingArrowUserPalette", _movingArrowUserPalette);
+	_progressUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "progressUserPalette", _progressUserPalette);
+	_scrollWindowUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "scrollWindowUserPalette", _scrollWindowUserPalette);
+	_smallCartUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "smallCartUserPalette", _smallCartUserPalette);
+	_startBorderUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "startBorderUserPalette", _startBorderUserPalette);
+	_startTextUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "startTextUserPalette", _startTextUserPalette);
+	_wirelessIconsUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "wirelessIconsUserPalette", _wirelessIconsUserPalette);
+
+	_iconA26UserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconA26UserPalette", _iconA26UserPalette);
+	_iconCPCUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconCPCUserPalette", _iconCPCUserPalette);
+	_iconCOLUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconCOLUserPalette", _iconCOLUserPalette);
+	_iconGBUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconGBUserPalette", _iconGBUserPalette);
+	_iconGBAUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconGBAUserPalette", _iconGBAUserPalette);
+	_iconGBAModeUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconGBAModeUserPalette", _iconGBAModeUserPalette);
+	_iconGGUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconGGUserPalette", _iconGGUserPalette);
+	_iconHBUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconHBUserPalette", _iconHBUserPalette);
+	_iconIMGUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconIMGUserPalette", _iconIMGUserPalette);
+	_iconINTUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconINTUserPalette", _iconINTUserPalette);
+	_iconM5UserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconM5UserPalette", _iconM5UserPalette);
+	_iconManualUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconManualUserPalette", _iconManualUserPalette);
+	_iconMDUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconMDUserPalette", _iconMDUserPalette);
+	_iconMINIUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconMINIUserPalette", _iconMINIUserPalette);
+	_iconMSXUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconMSXUserPalette", _iconMSXUserPalette);
+	_iconNESUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconNESUserPalette", _iconNESUserPalette);
+	_iconNGPUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconNGPUserPalette", _iconNGPUserPalette);
+	_iconPCEUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconPCEUserPalette", _iconPCEUserPalette);
+	_iconPLGUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconPLGUserPalette", _iconPLGUserPalette);
+	_iconSettingsUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconSettingsUserPalette", _iconSettingsUserPalette);
+	_iconSGUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconSGUserPalette", _iconSGUserPalette);
+	_iconSMSUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconSMSUserPalette", _iconSMSUserPalette);
+	_iconSNESUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconSNESUserPalette", _iconSNESUserPalette);
+	_iconUnknownUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconUnknownUserPalette", _iconUnknownUserPalette);
+	_iconVIDUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconVIDUserPalette", _iconVIDUserPalette);
+	_iconWSUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "iconWSUserPalette", _iconWSUserPalette);
+
+	_usernameUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "usernameUserPalette", _usernameUserPalette);
+	_usernameEdgeAlpha = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "usernameEdgeAlpha", _usernameEdgeAlpha);
+	_progressBarUserPalette = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "progressBarUserPalette", _progressBarUserPalette);
+
+	_purpleBatteryAvailable = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "purpleBatteryAvailable", _purpleBatteryAvailable);
+	_rotatingCubesRenderY = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "rotatingCubesRenderY", _rotatingCubesRenderY);
+	_renderPhoto = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "renderPhoto", _renderPhoto);
+	_darkLoading = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "darkLoading", _darkLoading);
+	_useAlphaBlend = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "useAlphaBlend", _useAlphaBlend);
+
+	_playStopSound = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "playStopSound", _playStopSound);
+	_playStartupJingle = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "playStartupJingle", _playStartupJingle);
+	_startupJingleDelayAdjust = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "startupJingleDelayAdjust", _startupJingleDelayAdjust);
+	_progressBarColor = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "progressBarColor", _progressBarColor);
+
+	_fontPalette1 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPalette1", _fontPalette1);
+	_fontPalette2 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPalette2", _fontPalette2);
+	_fontPalette3 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPalette3", _fontPalette3);
+	_fontPalette4 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPalette4", _fontPalette4);
+	_fontPaletteDisabled1 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDisabled1", _fontPalette1);
+	_fontPaletteDisabled2 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDisabled2", _fontPalette2);
+	_fontPaletteDisabled3 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDisabled3", _fontPalette3);
+	_fontPaletteDisabled4 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDisabled4", _fontPalette4);
+	_fontPaletteTitlebox1 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteTitlebox1", _fontPalette1);
+	_fontPaletteTitlebox2 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteTitlebox2", _fontPalette2);
+	_fontPaletteTitlebox3 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteTitlebox3", _fontPalette3);
+	_fontPaletteTitlebox4 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteTitlebox4", _fontPalette4);
+	_fontPaletteDialog1 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDialog1", _fontPalette1);
+	_fontPaletteDialog2 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDialog2", _fontPalette2);
+	_fontPaletteDialog3 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDialog3", _fontPalette3);
+	_fontPaletteDialog4 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDialog4", _fontPalette4);
+	_fontPaletteOverlay1 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteOverlay1", _fontPalette1);
+	_fontPaletteOverlay2 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteOverlay2", _fontPalette2);
+	_fontPaletteOverlay3 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteOverlay3", _fontPalette3);
+	_fontPaletteOverlay4 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteOverlay4", _fontPalette4);
+	_fontPaletteUsername1 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteUsername1", _fontPalette1);
+	_fontPaletteUsername2 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteUsername2", _fontPalette2);
+	_fontPaletteUsername3 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteUsername3", _fontPalette3);
+	_fontPaletteUsername4 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteUsername4", _fontPalette4);
+	_fontPaletteDateTime1 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDateTime1", _fontPalette1);
+	_fontPaletteDateTime2 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDateTime2", _fontPalette2);
+	_fontPaletteDateTime3 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDateTime3", _fontPalette3);
+	_fontPaletteDateTime4 = getJsonInt(buf, tokens, n, themeIdx, macroIdx, "fontPaletteDateTime4", _fontPalette4);
+
+	return true;
+}
+
 void ThemeConfig::loadConfig() {
 	//iprintf("tc().loadConfig()\n");
+	if (loadFromJson()) return; // merged theme.json, if this theme ships one -- see loadFromJson()
+
 	int macroY = 0;
 	int macroW = 0;
 

@@ -31,8 +31,11 @@ public:
 
 	ThemeLayout();
 
-	// Parses <ui-dir>/layout.json (TFN_THEME_LAYOUT) with jsmn, if present. On any error (file
-	// missing, too large, malformed JSON) every field is left at its constructor default.
+	// Tries <ui-dir>/theme.json (TFN_THEME_JSON) first -- the merged theme.ini+layout.json format,
+	// see themefilenames.h's comment on TFN_THEME_JSON -- and falls back to the legacy <ui-dir>/
+	// layout.json (TFN_THEME_LAYOUT) if that doesn't exist. Either way, parsed with jsmn; on any
+	// error (file missing, too large, malformed JSON) every field is left at its constructor
+	// default.
 	void loadConfig();
 
 	// ---- Grid geometry (defaults reproduce the DSi grid's former hardcoded constants) ----
@@ -62,6 +65,11 @@ public:
 	const SpriteTable *spriteTable(const std::string &name) const;
 
 private:
+	// Parses `path` with jsmn if it exists, filling in whatever of "grid"/"assets"/"sprites" it
+	// finds (same body regardless of caller -- see loadConfig()). Returns false (every field left
+	// untouched) if `path` doesn't exist, is empty/too large, or isn't valid JSON at the root.
+	bool loadFromFile(const std::string &path);
+
 	int _gridRows;
 	int _gridColsLeft;
 	int _gridColsRight;

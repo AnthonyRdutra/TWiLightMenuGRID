@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TWiLightMenuGRID Injector</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <main class="card">
+
+    <!-- 1. SD pick ------------------------------------------------------------------------- -->
+    <section class="screen" data-screen="sd_pick">
+      <h2>Select your DS/DSi SD card</h2>
+
+      <div class="block" id="found-cards-block" hidden>
+        <p class="hint">Cards with TWiLightMenu already installed:</p>
+        <ul class="pick-list" id="found-cards-list"></ul>
+      </div>
+
+      <div class="block" id="all-mounts-block" hidden>
+        <p class="hint">No card with <code>_nds</code> was found. Detected drives:</p>
+        <ul class="pick-list" id="all-mounts-list"></ul>
+      </div>
+
+      <div class="block" id="no-drives-block" hidden>
+        <p class="hint">No drives detected.</p>
+      </div>
+
+      <div class="block">
+        <p class="hint">Or enter the path manually:</p>
+        <div class="manual-path-row">
+          <input type="text" id="manual-sd-input" placeholder="/Volumes/MYCARD" autocomplete="off">
+          <button type="button" class="btn" id="use-path-btn">Use this path</button>
+        </div>
+        <p class="error" id="sd-pick-error" hidden></p>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn btn-ghost" id="rescan-btn">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                  d="M20 11A8 8 0 1 0 18.5 16M20 11V5M20 11h-6"/>
+          </svg>
+          Refresh list
+        </button>
+      </div>
+    </section>
+
+    <!-- 2. Already installed? --------------------------------------------------------------- -->
+    <section class="screen" data-screen="already_installed">
+      <h2>Installation</h2>
+      <p class="hint">Selected card: <strong id="chosen-sd-label"></strong></p>
+      <p>Is TWiLightMenuGRID already installed on this card?</p>
+
+      <div class="actions actions-row">
+        <button type="button" class="btn btn-primary" id="already-yes-btn">Yes, already installed</button>
+        <button type="button" class="btn" id="already-no-btn">No, install now</button>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="btn btn-ghost" id="back-to-sd-btn">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                  d="M14 6l-6 6 6 6"/>
+          </svg>
+          Back
+        </button>
+      </div>
+    </section>
+
+    <!-- 3. Theme pick ------------------------------------------------------------------------ -->
+    <section class="screen" data-screen="theme_pick">
+      <h2>Choose a theme to install</h2>
+
+      <p class="hint" id="no-themes-hint" hidden></p>
+      <ul class="pick-list pick-list-selectable" id="theme-list"></ul>
+
+      <div class="block">
+        <label class="field-label" for="srldr-path-input">dsimenu.srldr (optional)</label>
+        <p class="hint">Auto-detected next to the app in build/dsimenu.srldr if left blank. Only
+          needed if you want to deploy a different build.</p>
+        <div class="manual-path-row">
+          <input type="text" id="srldr-path-input" placeholder="/path/to/dsimenu.srldr" autocomplete="off">
+          <button type="button" class="btn btn-icon" id="srldr-path-browse-btn" title="Browse...">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"
+                    d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="actions actions-row">
+        <button type="button" class="btn btn-ghost" id="theme-back-btn">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                  d="M14 6l-6 6 6 6"/>
+          </svg>
+          Back
+        </button>
+        <button type="button" class="btn btn-primary" id="install-btn">Install</button>
+      </div>
+    </section>
+
+    <!-- 4a. Scrape: ask ------------------------------------------------------------------------ -->
+    <section class="screen" data-screen="scrape_ask">
+      <h2>Fetch game logos now?</h2>
+      <p>We can download the cover/logo for each game found on the card, using ScreenScraper.fr.</p>
+      <p class="hint">This is optional -- you can do it later by running the Injector again with this same card.</p>
+
+      <div class="actions actions-row">
+        <button type="button" class="btn" id="scrape-ask-skip-btn">Skip</button>
+        <button type="button" class="btn btn-primary" id="scrape-ask-yes-btn">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                  d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14"/>
+          </svg>
+          Fetch logos
+        </button>
+      </div>
+    </section>
+
+    <!-- 4b. Scrape: ScreenScraper login (optional) ---------------------------------------------- -->
+    <section class="screen" data-screen="scrape_login">
+      <h2>Sign in to ScreenScraper (optional)</h2>
+      <p class="hint">A free screenscraper.fr account grants more requests per day.
+        Without a login the search still works, just slower.
+        <a href="#" class="link" id="scrape-login-signup-link">Create a free account</a></p>
+
+      <div class="block">
+        <label class="field-label" for="scrape-login-user">Username</label>
+        <input type="text" id="scrape-login-user" autocomplete="username">
+
+        <label class="field-label" for="scrape-login-pass">Password</label>
+        <input type="password" id="scrape-login-pass" autocomplete="current-password">
+        <p class="hint" id="scrape-login-saved-hint" hidden>There's a saved password -- leave blank to reuse it.</p>
+
+        <label class="checkbox-row">
+          <input type="checkbox" id="scrape-login-remember" checked>
+          Remember my credentials on this computer
+        </label>
+
+        <p class="error" id="scrape-login-error" hidden></p>
+      </div>
+
+      <div class="actions actions-row">
+        <button type="button" class="btn btn-ghost" id="scrape-login-forget-btn" hidden>Forget saved credentials</button>
+        <div class="button-group">
+          <button type="button" class="btn" id="scrape-login-skip-btn">Continue without login</button>
+          <button type="button" class="btn btn-primary" id="scrape-login-continue-btn">Sign in and continue</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4c. Scrape: checking the login (background job, no numeric progress to show) ------------ -->
+    <section class="screen" data-screen="scrape_login_checking">
+      <div class="loading-block">
+        <div class="spinner" aria-hidden="true"></div>
+        <p class="hint">Signing in to ScreenScraper...</p>
+      </div>
+    </section>
+
+    <!-- 4c2. Scrape: scanning+hashing the SD (background job, has real per-file progress) ------- -->
+    <section class="screen" data-screen="scrape_scanning">
+      <h2>Scanning card...</h2>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="scrape-scan-progress-fill"></div>
+      </div>
+      <p class="hint" id="scrape-scan-progress-label"></p>
+
+      <div class="actions">
+        <button type="button" class="btn btn-ghost" id="scrape-scan-cancel-btn">Cancel</button>
+      </div>
+    </section>
+
+    <!-- 4d. Scrape: preview (list-only, no network yet) ---------------------------------------- -->
+    <section class="screen" data-screen="scrape_preview">
+      <h2>Games found</h2>
+      <p class="hint" id="scrape-preview-summary"></p>
+
+      <div class="block" id="scrape-preview-empty-block" hidden>
+        <p class="hint">No new games found to fetch.</p>
+      </div>
+      <ul class="pick-list" id="scrape-preview-list"></ul>
+
+      <label class="checkbox-row" id="scrape-preview-force-row" hidden>
+        <input type="checkbox" id="scrape-preview-force">
+        Re-fetch all logos, even ones already downloaded
+      </label>
+
+      <div class="actions actions-row">
+        <button type="button" class="btn" id="scrape-preview-skip-btn">Skip</button>
+        <button type="button" class="btn btn-primary" id="scrape-preview-start-btn">Fetch logos</button>
+      </div>
+    </section>
+
+    <!-- 4e. Scrape: progress -------------------------------------------------------------------- -->
+    <section class="screen" data-screen="scrape_progress">
+      <h2>Fetching logos...</h2>
+
+      <p class="field-label">Overall progress</p>
+      <div class="progress-track">
+        <div class="progress-fill" id="scrape-progress-fill"></div>
+      </div>
+      <p class="hint" id="scrape-progress-label"></p>
+      <p class="hint" id="scrape-progress-detail"></p>
+
+      <p class="field-label">Current game</p>
+      <div class="progress-track">
+        <div class="progress-fill" id="scrape-item-progress-fill"></div>
+      </div>
+      <p class="hint" id="scrape-item-progress-label"></p>
+
+      <div class="actions">
+        <button type="button" class="btn btn-ghost" id="scrape-cancel-btn">Cancel</button>
+      </div>
+    </section>
+
+    <!-- 4e. Scrape: done -------------------------------------------------------------------------->
+    <section class="screen" data-screen="scrape_done">
+      <h2>Logo fetch complete</h2>
+      <ul class="stats-list" id="scrape-stats-list"></ul>
+      <p class="error" id="scrape-run-error" hidden></p>
+
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="scrape-done-ok-btn">OK</button>
+      </div>
+    </section>
+
+    <!-- 5. Done -------------------------------------------------------------------------------->
+    <section class="screen" data-screen="done">
+      <div class="done-badge">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="10.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+          <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+                d="M7.5 12.5l3 3 6-6.5"/>
+        </svg>
+      </div>
+      <h2>Done!</h2>
+
+      <pre class="log" id="done-log" hidden></pre>
+      <p class="hint" id="done-eject-hint" hidden></p>
+
+      <div class="actions actions-row">
+        <button type="button" class="btn btn-ghost" id="finish-btn">Finish</button>
+        <button type="button" class="btn btn-primary" id="restart-btn">Start over</button>
+      </div>
+    </section>
+
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

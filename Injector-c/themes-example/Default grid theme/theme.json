@@ -1,0 +1,70 @@
+{
+  "theme": {
+    "startBorderRenderY": 88,
+    "startBorderSpriteW": 32,
+    "startBorderSpriteH": 80,
+    "startTextRenderY": 143,
+
+    "bubbleTipRenderY": 80,
+    "bubbleTipRenderX": 122,
+    "bubbleTipSpriteW": 11,
+    "bubbleTipSpriteH": 8,
+
+    "titleboxRenderY": 92,
+    "titleboxMaxLines": 4,
+    "titleboxTextY": 35,
+    "titleboxTextW": 240,
+    "titleboxTextLarge": true,
+
+    "volumeRenderX": 4,
+    "volumeRenderY": 5,
+
+    "shoulderLRenderY": 172,
+    "shoulderLRenderX": 0,
+    "shoulderRRenderY": 172,
+    "shoulderRRenderX": 178,
+
+    "batteryRenderY": 5,
+    "batteryRenderX": 235,
+
+    "usernameRenderY": 5,
+
+    "statusBarContentOffsetX": 0,
+    "statusBarContentOffsetY": 0,
+    "logoZoomPercent": 100,
+    "logoOffsetX": 0,
+    "logoOffsetY": 0,
+
+    "fontPalette1": "0x0000",
+    "fontPalette2": "0xDEF7",
+    "fontPalette3": "0xC631",
+    "fontPalette4": "0xA108",
+    "fontPaletteDialog1": "0xFFFF",
+    "fontPaletteDialog4": "0xFFFF",
+
+    "startTextUserPalette": false,
+    "startBorderUserPalette": true,
+    "buttonArrowUserPalette": false,
+    "movingArrowUserPalette": true,
+    "launchDotsUserPalette": false,
+    "dialogBoxUserPalette": false,
+    "usernameUserPalette": false,
+
+    "purpleBatteryAvailable": true,
+    "renderPhoto": false
+  },
+
+  "macro": {
+    "titleboxTextY": 42,
+    "titleboxTextW": 224
+  },
+
+  "grid": {
+    "colSpacing": 48,
+    "rowSpacing": 52,
+    "rowOffsetY": 36,
+    "activeScale": 4096,
+    "inactiveScale": 2048,
+    "zoomStep": 585
+  }
+}

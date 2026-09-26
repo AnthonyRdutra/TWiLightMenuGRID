@@ -5,16 +5,16 @@
 #include <cstring>
 
 #include "themefilenames.h"
+#include "jsonwalk.h"
 
-#define JSMN_HEADER
-#include "common/jsmn.h"
-
-// Generous but bounded: layout.json is a small, hand-written config file, not user data. Anything
-// bigger than this or with more tokens than fit is treated the same as "absent" -- log and keep
-// defaults, never crash. Both are function-static (not stack locals) since loadConfig() runs once
-// at startup and there's no reason to spend ARM9 stack space on a one-shot buffer.
-static constexpr size_t LAYOUT_JSON_MAX_BYTES = 4096;
-static constexpr int LAYOUT_JSON_MAX_TOKENS = 160;
+// Generous but bounded: layout.json/theme.json are small, hand-written config files, not user
+// data. Anything bigger than this or with more tokens than fit is treated the same as "absent" --
+// log and keep defaults, never crash. Both are function-static (not stack locals) since
+// loadConfig() runs once at startup and there's no reason to spend ARM9 stack space on a one-shot
+// buffer. theme.json is the bigger of the two (it also carries everything theme.ini used to), so
+// both limits size this file, not layout.json alone.
+static constexpr size_t LAYOUT_JSON_MAX_BYTES = 8192;
+static constexpr int LAYOUT_JSON_MAX_TOKENS = 320;
 
 const std::string ThemeLayout::EMPTY_STRING;
 
@@ -37,74 +37,32 @@ ThemeLayout::ThemeLayout()
 	  _gridCursorEnabled(false) {
 }
 
-// ---- jsmn token-walk helpers (no DOM: tokens are spans into the original buffer) ----
+// jsoneq/jsmnTokenSpan/jsonInt/jsonBool/jsonString now live in jsonwalk.h, shared with
+// ThemeConfig.cpp's theme.json reader.
 
-static bool jsoneq(const char *json, const jsmntok_t &tok, const char *s) {
-	int len = tok.end - tok.start;
-	return tok.type == JSMN_STRING && (int)strlen(s) == len && strncmp(json + tok.start, s, len) == 0;
-}
-
-// Number of tokens occupied by the value at `idx`, including its descendants -- needed to skip
-// over a nested object/array we don't recognize instead of misreading its contents as siblings.
-static int jsmnTokenSpan(const jsmntok_t *tokens, int idx) {
-	const jsmntok_t &t = tokens[idx];
-	int span = 1;
-	if (t.type == JSMN_OBJECT) {
-		for (int i = 0; i < t.size; i++) {
-			span += 1; // key (always a plain string, no children of its own)
-			span += jsmnTokenSpan(tokens, idx + span);
-		}
-	} else if (t.type == JSMN_ARRAY) {
-		for (int i = 0; i < t.size; i++)
-			span += jsmnTokenSpan(tokens, idx + span);
-	}
-	return span;
-}
-
-static int jsonInt(const char *json, const jsmntok_t &tok, int defVal) {
-	int len = tok.end - tok.start;
-	if (tok.type != JSMN_PRIMITIVE || len <= 0 || len >= 16)
-		return defVal;
-	char tmp[16];
-	memcpy(tmp, json + tok.start, len);
-	tmp[len] = '\0';
-	if (tmp[0] == 't') return 1;  // true
-	if (tmp[0] == 'f') return 0;  // false
-	return atoi(tmp);
-}
-
-static bool jsonBool(const char *json, const jsmntok_t &tok, bool defVal) {
-	if (tok.type != JSMN_PRIMITIVE || tok.end - tok.start <= 0)
-		return defVal;
-	return json[tok.start] == 't';
-}
-
-static std::string jsonString(const char *json, const jsmntok_t &tok) {
-	if (tok.type != JSMN_STRING)
-		return std::string();
-	return std::string(json + tok.start, tok.end - tok.start);
-}
-
-void ThemeLayout::loadConfig() {
-	std::string path = TFN_THEME_LAYOUT;
-
+// Same body regardless of which file it's reading -- theme.json's root object carries "grid"/
+// "assets"/"sprites" alongside "theme"/"macro" (ThemeConfig.cpp's concern, ignored here the same
+// way any OTHER unrecognized top-level key already is), so this needs no changes beyond the path
+// it's given. Returns true if `path` existed and was at least parseable enough to read from
+// (even if some/all of its keys were themselves malformed -- those just keep their defaults).
+bool ThemeLayout::loadFromFile(const std::string &path) {
 	FILE *f = fopen(path.c_str(), "rb");
 	if (!f)
-		return; // no layout.json shipped by this theme -- keep every default as-is
+		return false; // file doesn't exist -- caller tries the next fallback, if any
 
 	fseek(f, 0, SEEK_END);
 	long fileSize = ftell(f);
 	fseek(f, 0, SEEK_SET);
 	if (fileSize <= 0 || (size_t)fileSize > LAYOUT_JSON_MAX_BYTES) {
 		fclose(f); // empty, unreadable, or bigger than our fixed buffer -- treat as absent
-		return;
+		return false;
 	}
 
 	static char buf[LAYOUT_JSON_MAX_BYTES + 1];
 	size_t readCount = fread(buf, 1, (size_t)fileSize, f);
 	fclose(f);
 	if (readCount != (size_t)fileSize)
-		return;
+		return false;
 	buf[readCount] = '\0';
 
 	static jsmntok_t tokens[LAYOUT_JSON_MAX_TOKENS];
@@ -112,7 +70,7 @@ void ThemeLayout::loadConfig() {
 	jsmn_init(&parser);
 	int n = jsmn_parse(&parser, buf, readCount, tokens, LAYOUT_JSON_MAX_TOKENS);
 	if (n < 1 || tokens[0].type != JSMN_OBJECT)
-		return; // malformed / truncated / not an object at the root -- keep defaults
+		return false; // malformed / truncated / not an object at the root -- keep defaults
 
 	int i = 1;
 	for (int obj = 0; obj < tokens[0].size && i < n; obj++) {
@@ -191,6 +149,16 @@ void ThemeLayout::loadConfig() {
 
 		i = valIdx + jsmnTokenSpan(tokens, valIdx);
 	}
+	return true;
+}
+
+void ThemeLayout::loadConfig() {
+	// theme.json (if this theme ships one) replaces BOTH theme.ini and layout.json outright --
+	// see TFN_THEME_JSON's comment in themefilenames.h. Falls back to the legacy layout.json path
+	// unchanged for every theme that doesn't have one.
+	if (loadFromFile(TFN_THEME_JSON))
+		return;
+	loadFromFile(TFN_THEME_LAYOUT);
 }
 
 const std::string &ThemeLayout::assetPath(const std::string &key) const {

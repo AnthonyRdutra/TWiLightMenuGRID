@@ -2,6 +2,7 @@
 #include <string>
 #include "common/inifile.h"
 #include "common/singleton.h"
+#include "jsonwalk.h"
 
 #pragma once
 #ifndef _THEMECONFIG_H_
@@ -10,6 +11,21 @@
 class ThemeConfig {
 private:
 	int getInt(CIniFile &ini, const std::string &item, int defaultVal);
+
+	// Tries <ui-dir>/theme.json (TFN_THEME_JSON) -- the merged theme.ini+layout.json format, see
+	// themefilenames.h's comment on TFN_THEME_JSON. Returns false (every field left at whatever
+	// the constructor set) if the file doesn't exist, is empty/too large/malformed, or has no
+	// "theme" object at its root -- loadConfig() falls back to the legacy theme.ini path in every
+	// one of those cases, same posture as ThemeLayout::loadFromFile().
+	bool loadFromJson();
+
+	// getInt()'s JSON counterpart: `item` is looked up as a direct child of the "theme" object
+	// (themeIdx) first, same as CIniFile's [THEME] section; if ms().macroMode and the "macro"
+	// object (macroIdx, may be -1 if theme.json has none) also has `item`, that value wins
+	// instead -- mirrors getInt()'s `ini.GetInt("MACRO", item, ini.GetInt("THEME", item, def))`
+	// exactly, just against JSON objects instead of INI sections.
+	int getJsonInt(const char *json, const jsmntok_t *tokens, int n, int themeIdx, int macroIdx,
+	               const char *item, int defaultVal);
 
 	int _startBorderRenderY;
 	int _startBorderSpriteW;

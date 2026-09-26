@@ -1,0 +1,375 @@
+:root {
+  color-scheme: light dark;
+  --bg: #1b1d22;
+  --card-border: #34363f;
+  --text: #e8e9ee;
+  --text-dim: #9a9ca6;
+  --accent: #5b8cff;
+  --accent-text: #0b1020;
+  --danger: #e6857a;
+  --pill-bg: #2d2f38;
+  --success: #7fd88a;
+  /* Hover/active/selected highlight -- mixed from --accent so it always reads as a tinted, higher-
+   * contrast version of the resting background rather than an arbitrary gray step, keeping it
+   * legible against --text in both color schemes. */
+  --highlight: color-mix(in srgb, var(--accent) 22%, var(--pill-bg));
+  --highlight-strong: color-mix(in srgb, var(--accent) 38%, var(--pill-bg));
+}
+
+* { box-sizing: border-box; }
+
+/* .block/.pick-item/etc below all set their own `display`, which -- at equal specificity --
+ * would otherwise beat the UA stylesheet's `[hidden] { display: none }` and leave "hidden"
+ * elements visible (e.g. an empty found-cards-block still showing its header, or a
+ * should-be-gone no-drives-block eating layout space next to the real list). */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Everything below is flex all the way down, so the whole UI reflows with the window instead of
+ * being sized for one fixed window size. */
+.app {
+  display: flex;
+  height: 100vh;
+  padding: clamp(12px, 3vw, 28px);
+}
+
+.card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* let children scroll instead of stretching the window */
+  min-width: 0;
+  padding: clamp(18px, 3vw, 30px);
+}
+
+.screen {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+/* The screen itself scrolls as a whole when its content doesn't fit -- individual pieces (the
+ * SD/theme lists, the log) never get boxed into their own inner scroll pane. */
+.screen.active { display: flex; overflow-y: auto; animation: fade-in 0.15s ease; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+h2 {
+  margin: 0 0 16px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  flex-shrink: 0;
+}
+
+.hint {
+  color: var(--text-dim);
+  font-size: 13.5px;
+  margin: 0 0 8px;
+}
+.hint code {
+  background: var(--pill-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.block {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 18px;
+  flex-shrink: 0;
+}
+
+.pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pick-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--pill-bg);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.pick-item:hover { background: var(--highlight); }
+.pick-item.selected {
+  background: var(--highlight-strong);
+  border-color: var(--accent);
+}
+.pick-item .icon {
+  width: 18px;
+  height: 18px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.pick-item.selected .icon { color: var(--accent); }
+.pick-item .path,
+.pick-item .name { flex: 1; overflow-wrap: anywhere; }
+
+/* Static (non-clickable) variant -- used for informational lists like the scrape preview, where
+ * the row isn't a button. */
+.pick-item.static { cursor: default; }
+.pick-item.static:hover { background: var(--pill-bg); }
+.pick-item .badge {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: var(--card-border);
+  color: var(--text-dim);
+}
+.pick-item .badge.badge-success { background: color-mix(in srgb, var(--success) 25%, transparent); color: var(--success); }
+
+.manual-path-row {
+  display: flex;
+  gap: 8px;
+}
+.manual-path-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--card-border);
+  background: var(--pill-bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.manual-path-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-label {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin: 0 0 4px;
+}
+
+input[type="text"]#scrape-login-user,
+input[type="password"]#scrape-login-pass {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--card-border);
+  background: var(--pill-bg);
+  color: var(--text);
+  font-size: 14px;
+}
+input[type="text"]#scrape-login-user:focus,
+input[type="password"]#scrape-login-pass:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.button-group {
+  display: flex;
+  gap: 8px;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 13.5px;
+  margin: 8px 0 0;
+}
+
+.link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+.link:hover { text-decoration: underline; }
+
+.actions {
+  margin-top: 18px;
+  padding-top: 18px;
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+.actions-row { justify-content: space-between; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--card-border);
+  background: var(--pill-bg);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s ease, transform 0.05s ease;
+}
+.btn:hover { background: var(--highlight); }
+.btn:active { background: var(--highlight-strong); transform: scale(0.98); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.btn-primary:hover { filter: brightness(1.08); }
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+.btn-ghost:hover { background: var(--highlight); color: var(--text); }
+
+/* Icon-only button (e.g. the "browse for a file" button next to a manual-path-row input) --
+ * square instead of .btn's usual pill-of-text shape, same height as the input beside it. */
+.btn-icon { padding: 9px; flex-shrink: 0; }
+
+.icon { width: 16px; height: 16px; }
+
+.done-badge {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 14px;
+  color: var(--success);
+  flex-shrink: 0;
+}
+.done-badge svg { width: 100%; height: 100%; }
+section[data-screen="done"] h2 { text-align: center; }
+
+.progress-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--pill-bg);
+  overflow: hidden;
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 0.2s ease;
+}
+
+/* Used when a download's total size is unknown (no Content-Length) -- a moving-stripes fill
+ * reads as "still working" without implying a fake percentage. */
+.progress-fill.indeterminate {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--accent) 0 10px,
+    color-mix(in srgb, var(--accent) 55%, transparent) 10px 20px
+  );
+  background-size: 28px 28px;
+  animation: indeterminate-stripes 0.6s linear infinite;
+  transition: none;
+}
+
+@keyframes indeterminate-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 28px 0; }
+}
+
+.stats-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stats-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--pill-bg);
+  border-radius: 4px;
+  font-size: 13.5px;
+}
+.stats-list li span:first-child { color: var(--text-dim); }
+.stats-list li span:last-child { font-weight: 600; }
+
+.log {
+  flex: 1;
+  min-height: 0;
+  background: var(--pill-bg);
+  border-radius: 4px;
+  padding: 12px 14px;
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-y: auto;
+  margin: 0 0 12px;
+}
+
+.loading-block {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid var(--pill-bg);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f3f6;
+    --card-border: #e2e4ea;
+    --text: #1c1e24;
+    --text-dim: #6b6e78;
+    --accent: #3b63e0;
+    --accent-text: #ffffff;
+    --pill-bg: #f0f1f5;
+  }
+}

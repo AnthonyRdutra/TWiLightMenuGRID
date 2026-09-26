@@ -48,6 +48,13 @@
 // graphics/ThemeLayout.h. Optional: themes without this file keep ThemeLayout's hardcoded
 // defaults, which reproduce the DSi grid's pre-existing behavior exactly.
 #define TFN_THEME_LAYOUT            TFN_UI_DIRECTORY"/layout.json"
+// Single-file merge of theme.ini + layout.json ("theme"/"macro" objects instead of [THEME]/
+// [MACRO] sections, alongside layout.json's existing "grid"/"assets"/"sprites" objects) -- see
+// graphics/ThemeConfig.cpp and graphics/ThemeLayout.cpp. A theme that ships this file has BOTH
+// theme.ini and layout.json ignored entirely (this one file wins outright, it isn't merged
+// key-by-key with them); a theme that doesn't ship it is unaffected and keeps reading the two
+// separate files exactly as before this existed.
+#define TFN_THEME_JSON              TFN_UI_DIRECTORY"/theme.json"
 
 #define TFN_BG_TOPBG                TFN_UI_DIRECTORY"/background/top"
 #define TFN_BG_TOPPHOTOBG           TFN_UI_DIRECTORY"/background/top_photo"
